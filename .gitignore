@@ -1,0 +1,70 @@
+# Dependencies
+node_modules/
+
+# Next.js
+.next/
+out/
+
+# Build
+build/
+dist/
+
+# Database (legacy, no longer used)
+db/*.db
+db/*.db-journal
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+dev.log
+server.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Temp files
+*.tmp
+*.bak
+*~
+
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts
+
+# Vercel
+.vercel
+
+# Debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+bun-debug.log*
+bun-error.log*
+
+# Local env files
+.env*.local
+
+# Testing
+coverage/
+
+# Misc
+*.tgz
+.cache/
+.temp/
+tmp/
+
+# Agent/crew artifacts
+.agent-ctx/
+.crew/
+${APPDATA}/npm/
