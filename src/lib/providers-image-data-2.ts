@@ -263,7 +263,7 @@ export const IMAGE_MODELS = [
   {
     providerName: "google-aistudio",
     name: "Gemini 2.5 Flash Image",
-    modelId: "gemini-2.5-flash-preview-05-20",
+    modelId: "gemini-2.5-flash-image",
     type: "image",
     capabilities: "t2i,i2i,edit",
     description: "100% FREE — Gemini 2.5 Flash with native image generation & editing. Conversational create & edit.",
@@ -374,7 +374,7 @@ export const IMAGE_MODELS = [
   {
     providerName: "google-vertex",
     name: "Gemini 2.5 Flash Image",
-    modelId: "gemini-2.5-flash-preview-05-20",
+    modelId: "gemini-2.5-flash-image",
     type: "image",
     capabilities: "t2i,i2i,edit",
     description: "FREE — Gemini 2.5 Flash with native image generation & editing via Vertex AI",
