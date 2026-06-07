@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { PROVIDERS } from '@/lib/providers-data';
+import { PROVIDERS, MODELS } from '@/lib/providers-data';
 
 export async function POST(req: NextRequest) {
   try {
@@ -16,7 +16,6 @@ export async function POST(req: NextRequest) {
     }
 
     // Return the static models for this provider as "discovered"
-    const { MODELS } = await import('@/lib/providers-data');
     const providerModels = MODELS.filter((m) => m.providerName === providerId);
 
     const models = providerModels.map((m) => ({
@@ -25,7 +24,7 @@ export async function POST(req: NextRequest) {
       type: m.type,
       capabilities: m.capabilities.split(',').map((c) => c.trim()),
       description: m.description || `${provider.displayName} model: ${m.modelId}`,
-      alreadyAdded: true,
+      alreadyAdded: false,
     }));
 
     return NextResponse.json({
@@ -34,7 +33,7 @@ export async function POST(req: NextRequest) {
       providerName: provider.displayName,
       models,
       totalFound: models.length,
-      totalNew: 0,
+      totalNew: models.length,
     });
   } catch (error) {
     console.error('Models discover error:', error);

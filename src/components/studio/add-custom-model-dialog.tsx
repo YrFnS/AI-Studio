@@ -18,6 +18,7 @@ import {
 
 import { useApiKeys } from '@/hooks/use-api-keys';
 import type { Provider } from '@/lib/types';
+import { saveCustomModel } from '@/lib/idb';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -264,23 +265,18 @@ export function AddCustomModelDialog({
     setFormSubmitting(true);
     try {
       const capabilities = formCapabilities.join(',');
-      const res = await fetch('/api/models', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          providerId: formProviderId,
-          name: formName.trim(),
-          modelId: formModelId.trim(),
-          type: formType,
-          capabilities,
-          description: formDescription.trim() || undefined,
-        }),
-      });
+      const provider = providers.find((p) => p.id === formProviderId);
+      const providerName = provider?.displayName || provider?.name || formProviderId;
 
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || 'Failed to add model');
-      }
+      await saveCustomModel({
+        providerId: formProviderId,
+        providerName,
+        name: formName.trim(),
+        modelId: formModelId.trim(),
+        type: formType,
+        capabilities,
+        description: formDescription.trim() || undefined,
+      });
 
       toast.success(`Model "${formName}" added successfully`);
       resetForm();

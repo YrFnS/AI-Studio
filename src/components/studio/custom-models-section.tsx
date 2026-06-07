@@ -18,6 +18,7 @@ import {
 
 import { useApiKeys } from '@/hooks/use-api-keys';
 import type { Provider, ModelWithProvider } from '@/lib/types';
+import { saveCustomModel, getAllCustomModels, deleteCustomModel, type CustomModelRecord } from '@/lib/idb';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -55,14 +56,43 @@ export function CustomModelsSection() {
   // Fetch models and providers ------------------------------------------------
   const fetchData = useCallback(async () => {
     try {
-      const [modelsRes, providersRes] = await Promise.all([
+      const [modelsRes, providersRes, customModels] = await Promise.all([
         fetch('/api/models'),
         fetch('/api/providers'),
+        getAllCustomModels(),
       ]);
+
+      let allModels: ModelWithProvider[] = [];
+
       if (modelsRes.ok) {
         const data = await modelsRes.json();
-        setModels(data);
+        allModels = data as ModelWithProvider[];
       }
+
+      // Merge custom (user-added) models from IndexedDB
+      if (customModels.length > 0) {
+        const customRecords = customModels.map((m: CustomModelRecord) => ({
+          id: m.id,
+          name: m.name,
+          modelId: m.modelId,
+          type: m.type,
+          capabilities: m.capabilities,
+          description: m.description || '',
+          priceInfo: m.priceInfo || '',
+          isDefault: false,
+          isActive: true,
+          sortOrder: 0,
+          createdAt: new Date(m.createdAt).toISOString(),
+          provider: {
+            name: m.providerName,
+            displayName: m.providerName,
+          },
+        }));
+        allModels = [...customRecords, ...allModels];
+      }
+
+      setModels(allModels);
+
       if (providersRes.ok) {
         const data = await providersRes.json();
         setProviders(data);
@@ -159,8 +189,7 @@ export function CustomModelsSection() {
     async (modelId: string, modelName: string) => {
       setDeleting((prev) => ({ ...prev, [modelId]: true }));
       try {
-        const res = await fetch(`/api/models?id=${modelId}`, { method: 'DELETE' });
-        if (!res.ok) throw new Error('Failed to delete model');
+        await deleteCustomModel(modelId);
         toast.success(`Model "${modelName}" removed`);
         fetchData();
       } catch {

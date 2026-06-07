@@ -4,7 +4,7 @@
 // ---------------------------------------------------------------------------
 
 const DB_NAME = 'ai-studio';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 
 // ---------------------------------------------------------------------------
 // Open / upgrade DB
@@ -56,6 +56,11 @@ function openDB(): Promise<IDBDatabase> {
         const itemStore = db.createObjectStore('collectionItems', { keyPath: 'id' });
         itemStore.createIndex('collectionId', 'collectionId', { unique: false });
         itemStore.createIndex('generationId', 'generationId', { unique: false });
+      }
+      // v4: customModels store
+      if (!db.objectStoreNames.contains('customModels')) {
+        const customStore = db.createObjectStore('customModels', { keyPath: 'id' });
+        customStore.createIndex('providerId', 'providerId', { unique: false });
       }
     };
   });
@@ -530,4 +535,51 @@ export async function getCollectionItems(generationIds: string[]): Promise<{ gen
   const all: CollectionItemRecord[] = await reqToPromise(stores['collectionItems'].getAll());
   const idSet = new Set(generationIds);
   return all.filter((i) => idSet.has(i.generationId)).map((i) => ({ generationId: i.generationId, collectionId: i.collectionId }));
+}
+
+// ===========================================================================
+// Custom Models (user-added models stored in IndexedDB)
+// ===========================================================================
+
+export interface CustomModelRecord {
+  id: string;
+  providerId: string;
+  providerName: string;
+  name: string;
+  modelId: string;
+  type: 'image' | 'video';
+  capabilities: string;
+  description?: string;
+  priceInfo?: string;
+  createdAt: number;
+}
+
+export async function saveCustomModel(model: Omit<CustomModelRecord, 'id' | 'createdAt'>): Promise<CustomModelRecord> {
+  const record: CustomModelRecord = {
+    ...model,
+    id: crypto.randomUUID(),
+    createdAt: Date.now(),
+  };
+  const { transaction, stores } = await tx('customModels', 'readwrite');
+  stores['customModels'].put(record);
+  await txComplete(transaction);
+  return record;
+}
+
+export async function getAllCustomModels(): Promise<CustomModelRecord[]> {
+  const { stores } = await tx('customModels');
+  const all: CustomModelRecord[] = await reqToPromise(stores['customModels'].getAll());
+  return all.sort((a, b) => a.createdAt - b.createdAt);
+}
+
+export async function deleteCustomModel(id: string): Promise<void> {
+  const { transaction, stores } = await tx('customModels', 'readwrite');
+  stores['customModels'].delete(id);
+  await txComplete(transaction);
+}
+
+export async function clearAllCustomModels(): Promise<void> {
+  const { transaction, stores } = await tx('customModels', 'readwrite');
+  stores['customModels'].clear();
+  await txComplete(transaction);
 }

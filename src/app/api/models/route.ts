@@ -18,12 +18,12 @@ export async function GET(req: NextRequest) {
   }
 }
 
-// POST — no-op (models are now static, defined in providers-data.ts)
+// POST — no-op (custom models are managed client-side via IndexedDB)
 export async function POST() {
-  return NextResponse.json({ message: 'Models are now managed through the static provider catalog. Edit src/lib/providers-data.ts to add custom models.' });
+  return NextResponse.json({ message: 'Models are managed client-side. Use the IndexedDB custom models store.' });
 }
 
 // DELETE — no-op
 export async function DELETE() {
-  return NextResponse.json({ success: true, message: 'Models are now managed through the static provider catalog.' });
+  return NextResponse.json({ success: true, message: 'Models are managed client-side.' });
 }
