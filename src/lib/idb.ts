@@ -4,7 +4,7 @@
 // ---------------------------------------------------------------------------
 
 const DB_NAME = 'ai-studio';
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 
 // ---------------------------------------------------------------------------
 // Open / upgrade DB
@@ -61,6 +61,11 @@ function openDB(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains('customModels')) {
         const customStore = db.createObjectStore('customModels', { keyPath: 'id' });
         customStore.createIndex('providerId', 'providerId', { unique: false });
+      }
+      // v5: discoveredModels cache
+      if (!db.objectStoreNames.contains('discoveredModels')) {
+        const discStore = db.createObjectStore('discoveredModels', { keyPath: 'id' });
+        discStore.createIndex('providerName', 'providerName', { unique: false });
       }
     };
   });
@@ -581,5 +586,52 @@ export async function deleteCustomModel(id: string): Promise<void> {
 export async function clearAllCustomModels(): Promise<void> {
   const { transaction, stores } = await tx('customModels', 'readwrite');
   stores['customModels'].clear();
+  await txComplete(transaction);
+}
+
+// ===========================================================================
+// Discovered Models Cache (dynamic models fetched from provider APIs)
+// ===========================================================================
+
+export interface DiscoveredModelCache {
+  id: string;                   // `${providerName}-${modelId}`
+  providerName: string;
+  modelId: string;
+  name: string;
+  type: 'image' | 'video';
+  capabilities: string;         // comma-separated
+  description?: string;
+  priceInfo?: string;
+  fetchedAt: number;            // timestamp
+}
+
+const DISCOVERED_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
+
+export async function saveDiscoveredModels(models: DiscoveredModelCache[]): Promise<void> {
+  const { transaction, stores } = await tx('discoveredModels', 'readwrite');
+  const store = stores['discoveredModels'];
+  for (const model of models) {
+    store.put(model);
+  }
+  await txComplete(transaction);
+}
+
+export async function getDiscoveredModels(providerName: string): Promise<DiscoveredModelCache[]> {
+  const { stores } = await tx('discoveredModels');
+  const all: DiscoveredModelCache[] = await reqToPromise(stores['discoveredModels'].getAll());
+  const cutoff = Date.now() - DISCOVERED_CACHE_TTL;
+  return all.filter((m) => m.providerName === providerName && m.fetchedAt > cutoff);
+}
+
+export async function getAllDiscoveredModels(): Promise<DiscoveredModelCache[]> {
+  const { stores } = await tx('discoveredModels');
+  const all: DiscoveredModelCache[] = await reqToPromise(stores['discoveredModels'].getAll());
+  const cutoff = Date.now() - DISCOVERED_CACHE_TTL;
+  return all.filter((m) => m.fetchedAt > cutoff);
+}
+
+export async function clearDiscoveredModelsCache(): Promise<void> {
+  const { transaction, stores } = await tx('discoveredModels', 'readwrite');
+  stores['discoveredModels'].clear();
   await txComplete(transaction);
 }

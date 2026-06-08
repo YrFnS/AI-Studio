@@ -19,6 +19,7 @@ import {
 import { useApiKeys } from '@/hooks/use-api-keys';
 import type { Provider, ModelWithProvider } from '@/lib/types';
 import { saveCustomModel, getAllCustomModels, deleteCustomModel, type CustomModelRecord } from '@/lib/idb';
+import { loadAllModels, getStaticProviders, providerSupportsDiscovery } from '@/lib/model-service';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -53,56 +54,52 @@ export function CustomModelsSection() {
   const [capabilityFilter, setCapabilityFilter] = useState<string>('all');
   const [showFilters, setShowFilters] = useState(false);
 
+  // Discover state
+  const [discovering, setDiscovering] = useState(false);
+
   // Fetch models and providers ------------------------------------------------
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(async (options?: { fetchDynamic?: boolean }) => {
     try {
-      const [modelsRes, providersRes, customModels] = await Promise.all([
-        fetch('/api/models'),
-        fetch('/api/providers'),
-        getAllCustomModels(),
-      ]);
+      setLoading(true);
 
-      let allModels: ModelWithProvider[] = [];
-
-      if (modelsRes.ok) {
-        const data = await modelsRes.json();
-        allModels = data as ModelWithProvider[];
+      const keys = apiKeysHook.keys;
+      const apiKeyMap: Record<string, string> = {};
+      for (const key of keys) {
+        apiKeyMap[key.providerId] = key.key;
       }
 
-      // Merge custom (user-added) models from IndexedDB
-      if (customModels.length > 0) {
-        const customRecords = customModels.map((m: CustomModelRecord) => ({
-          id: m.id,
-          name: m.name,
-          modelId: m.modelId,
-          type: m.type,
-          capabilities: m.capabilities,
-          description: m.description || '',
-          priceInfo: m.priceInfo || '',
-          isDefault: false,
-          isActive: true,
-          sortOrder: 0,
-          createdAt: new Date(m.createdAt).toISOString(),
-          provider: {
-            name: m.providerName,
-            displayName: m.providerName,
-          },
-        }));
-        allModels = [...customRecords, ...allModels];
-      }
+      const allModels = await loadAllModels({
+        fetchDynamic: options?.fetchDynamic ?? false,
+        apiKeyMap,
+      });
 
       setModels(allModels);
 
-      if (providersRes.ok) {
-        const data = await providersRes.json();
-        setProviders(data);
-      }
+      const staticProviders = getStaticProviders();
+      const enrichedProviders = staticProviders.map((p) => ({
+        ...p,
+        hasKey: apiKeysHook.hasKey(p.id),
+        supportsDiscovery: providerSupportsDiscovery(p.name),
+      }));
+      setProviders(enrichedProviders as Provider[]);
     } catch {
       toast.error('Failed to load models');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [apiKeysHook]);
+
+  const handleDiscover = useCallback(async () => {
+    setDiscovering(true);
+    try {
+      await fetchData({ fetchDynamic: true });
+      toast.success('Models refreshed from provider APIs');
+    } catch {
+      // error handled in fetchData
+    } finally {
+      setDiscovering(false);
+    }
+  }, [fetchData]);
 
   useEffect(() => {
     fetchData();

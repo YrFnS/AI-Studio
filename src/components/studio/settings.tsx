@@ -40,7 +40,8 @@ import {
 } from 'lucide-react';
 
 import { useAppStore } from '@/lib/store';
-import { maskKey as idbMaskKey, getAllApiKeys, saveApiKey, deleteApiKey, clearAllApiKeys, saveCustomModel, getAllCustomModels, deleteCustomModel, type CustomModelRecord } from '@/lib/idb';
+import { maskKey as idbMaskKey, getAllApiKeys, saveApiKey, deleteApiKey, clearAllApiKeys, saveCustomModel, getAllCustomModels, deleteCustomModel, type CustomModelRecord, clearDiscoveredModelsCache } from '@/lib/idb';
+import { loadAllModels, getStaticProviders, providerSupportsDiscovery } from '@/lib/model-service';
 import { useApiKeys } from '@/hooks/use-api-keys';
 import type { ApiKeyRecord, ProviderModel, Provider, ModelWithProvider } from '@/lib/types';
 import { CAPABILITY_OPTIONS } from '@/lib/types';
@@ -807,57 +808,59 @@ function CustomModelsSection() {
   const [discoverError, setDiscoverError] = useState<string | null>(null);
   const [selectedDiscoveredId, setSelectedDiscoveredId] = useState<string>('');
 
+  // Discover state
+  const [discovering, setDiscovering] = useState(false);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+
   // Fetch models and providers ------------------------------------------------
-  const fetchData = useCallback(async () => {
+  const fetchData = useCallback(async (options?: { fetchDynamic?: boolean }) => {
     try {
-      const [modelsRes, providersRes, customModels] = await Promise.all([
-        fetch('/api/models'),
-        fetch('/api/providers'),
-        getAllCustomModels(),
-      ]);
+      setLoading(true);
+      setRefreshError(null);
 
-      let allModels: ModelWithProvider[] = [];
-
-      if (modelsRes.ok) {
-        const data = await modelsRes.json();
-        allModels = data as ModelWithProvider[];
+      // Get API keys for dynamic discovery
+      const keys = apiKeysHook.keys;
+      const apiKeyMap: Record<string, string> = {};
+      for (const key of keys) {
+        apiKeyMap[key.providerId] = key.key;
       }
 
-      // Merge custom (user-added) models from IndexedDB
-      if (customModels.length > 0) {
-        const customRecords = customModels.map((m: CustomModelRecord) => ({
-          id: m.id,
-          name: m.name,
-          modelId: m.modelId,
-          type: m.type,
-          capabilities: m.capabilities,
-          description: m.description || '',
-          priceInfo: m.priceInfo || '',
-          isDefault: false,
-          isActive: true,
-          sortOrder: 0,
-          createdAt: new Date(m.createdAt).toISOString(),
-          provider: {
-            name: m.providerName,
-            displayName: m.providerName,
-          },
-        }));
-        // Custom models first, then static defaults
-        allModels = [...customRecords, ...allModels];
-      }
+      const allModels = await loadAllModels({
+        fetchDynamic: options?.fetchDynamic ?? false,
+        apiKeyMap,
+      });
 
       setModels(allModels);
 
-      if (providersRes.ok) {
-        const data = await providersRes.json();
-        setProviders(data);
-      }
+      // Load static provider definitions (for provider metadata like color, baseUrl)
+      const staticProviders = getStaticProviders();
+      // Enrich with API-key status
+      const enrichedProviders = staticProviders.map((p) => ({
+        ...p,
+        hasKey: apiKeysHook.hasKey(p.id),
+        supportsDiscovery: providerSupportsDiscovery(p.name),
+      }));
+      setProviders(enrichedProviders as Provider[]);
     } catch {
       toast.error('Failed to load models');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [apiKeysHook]);
+
+  // Discover models from provider APIs
+  const handleDiscover = useCallback(async () => {
+    setDiscovering(true);
+    setDiscoverError(null);
+    try {
+      await fetchData({ fetchDynamic: true });
+      toast.success('Models refreshed from provider APIs');
+    } catch {
+      setRefreshError('Failed to discover models from providers');
+    } finally {
+      setDiscovering(false);
+    }
+  }, [fetchData]);
 
   useEffect(() => {
     fetchData();
@@ -1194,14 +1197,24 @@ function CustomModelsSection() {
             Browse and manage {modelStats.total} models across {providers.length} providers.
           </p>
         </div>
-        <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-          <DialogTrigger asChild>
-            <Button className="gap-2 bg-[#d9ff00] text-background hover:bg-[#c5eb00]">
-              <Plus className="h-4 w-4" />
-              Add Custom Model
-            </Button>
-          </DialogTrigger>
-          <DialogContent className="glass-strong sm:max-w-lg max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center gap-2">
+          <Button
+            onClick={handleDiscover}
+            disabled={discovering}
+            variant="outline"
+            className="gap-2 border-border/50 text-xs hover:border-[#d9ff00]/40 hover:text-[#d9ff00]"
+          >
+            {discovering ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
+            {discovering ? 'Refreshing…' : 'Refresh from APIs'}
+          </Button>
+          <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+            <DialogTrigger asChild>
+              <Button className="gap-2 bg-[#d9ff00] text-background hover:bg-[#c5eb00]">
+                <Plus className="h-4 w-4" />
+                Add Custom Model
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="glass-strong sm:max-w-lg max-h-[90vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle className="text-foreground">Add Custom Model</DialogTitle>
               <DialogDescription className="text-muted-foreground">
@@ -1558,6 +1571,7 @@ function CustomModelsSection() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+        </div>{/* closes flex items-center gap-2 */}
       </motion.div>
 
       {/* Stats Bar */}
