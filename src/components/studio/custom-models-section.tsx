@@ -14,6 +14,7 @@ import {
   Video,
   Sparkles,
   Zap,
+  RotateCcw,
 } from 'lucide-react';
 
 import { useApiKeys } from '@/hooks/use-api-keys';
@@ -224,13 +225,24 @@ export function CustomModelsSection() {
             Browse and manage {modelStats.total} models across {providers.length} providers.
           </p>
         </div>
-        <Button
-          onClick={() => setDialogOpen(true)}
-          className="gap-2 bg-[#d9ff00] text-background hover:bg-[#c5eb00]"
-        >
-          <Plus className="h-4 w-4" />
-          Add Custom Model
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            onClick={handleDiscover}
+            disabled={discovering}
+            variant="outline"
+            className="gap-2 border-border/50 text-xs hover:border-[#d9ff00]/40 hover:text-[#d9ff00]"
+          >
+            {discovering ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RotateCcw className="h-3.5 w-3.5" />}
+            {discovering ? 'Refreshing…' : 'Refresh from APIs'}
+          </Button>
+          <Button
+            onClick={() => setDialogOpen(true)}
+            className="gap-2 bg-[#d9ff00] text-background hover:bg-[#c5eb00]"
+          >
+            <Plus className="h-4 w-4" />
+            Add Custom Model
+          </Button>
+        </div>
       </motion.div>
 
       {/* Add Custom Model Dialog */}
