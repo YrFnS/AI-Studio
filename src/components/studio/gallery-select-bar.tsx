@@ -108,7 +108,7 @@ export function GallerySelectBar({
                   <span className="hidden sm:inline">Collection</span>
                 </Button>
               </PopoverTrigger>
-              <PopoverContent className="w-56 glass-strong border-border/60 bg-[#111111]/95 p-2" align="bottom">
+              <PopoverContent className="w-56 glass-strong border-border/60 bg-[#111111]/95 p-2" align="end">
                 <div className="space-y-1">
                   <p className="px-2 py-1 text-[10px] text-muted-foreground uppercase tracking-wider font-medium">Add to collection</p>
                   {collections.length === 0 ? (

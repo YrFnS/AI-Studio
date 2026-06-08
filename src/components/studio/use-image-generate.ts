@@ -225,7 +225,7 @@ export function useImageGenerate({
     }
 
     // Apply all preset suffixes
-    const applyPreset = (value: string, presets: { id: string; suffix?: string }[]) => {
+    const applyPreset = (value: string, presets: readonly { id: string; suffix?: string }[]) => {
       if (value !== 'none') {
         const preset = presets.find((p) => p.id === value);
         if (preset?.suffix) finalPrompt += preset.suffix;

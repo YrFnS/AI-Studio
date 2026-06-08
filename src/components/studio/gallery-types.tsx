@@ -74,7 +74,7 @@ export const cardVariants = {
     opacity: 1,
     y: 0,
     scale: 1,
-    transition: { type: 'spring', stiffness: 300, damping: 24 },
+    transition: { type: 'spring' as const, stiffness: 300, damping: 24 },
   },
   exit: {
     opacity: 0,
@@ -88,7 +88,7 @@ export const floatingBarVariants = {
   visible: {
     y: 0,
     opacity: 1,
-    transition: { type: 'spring', stiffness: 300, damping: 28 },
+    transition: { type: 'spring' as const, stiffness: 300, damping: 28 },
   },
   exit: {
     y: 80,

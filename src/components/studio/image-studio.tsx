@@ -2343,7 +2343,7 @@ function SidebarContent({
                             );
                           }
                           if (template.negativePrompt) {
-                            setNegativePrompt(template.negativePrompt);
+                            setImageNegativePrompt(template.negativePrompt);
                           }
                         }}
                       />
@@ -4451,7 +4451,7 @@ export function ImageStudio() {
                   }}
                 >
                   <img
-                    src={activeImageUrl}
+                    src={activeImageUrl || ''}
                     alt={imagePrompt}
                     className="w-full h-auto max-h-[60vh] object-contain"
                   />
@@ -4624,7 +4624,7 @@ export function ImageStudio() {
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => handleDownload(activeImageUrl)}
+                      onClick={() => activeImageUrl && handleDownload(activeImageUrl)}
                       className="gap-1.5 border-border/60 bg-surface hover:bg-surface-hover"
                     >
                       <Download className="h-3.5 w-3.5" />
@@ -4794,7 +4794,7 @@ export function ImageStudio() {
                             type="button"
                             whileHover={{ scale: 1.05 }}
                             whileTap={{ scale: 0.95 }}
-                            onClick={() => { setInputImageUrl(activeImageUrl); saveReferenceImage(activeImageUrl).catch(() => {}); }}
+                            onClick={() => { if (activeImageUrl) { setInputImageUrl(activeImageUrl); saveReferenceImage(activeImageUrl).catch(() => {}); } }}
                             className="flex flex-col items-center gap-1 rounded-lg border border-border/40 bg-surface px-2 py-2 text-center transition-all hover:border-[#d9ff00]/40 hover:bg-[#d9ff00]/5 group"
                           >
                             <ImagePlus className="h-4 w-4 text-muted-foreground group-hover:text-[#d9ff00] transition-colors" />
@@ -4890,7 +4890,7 @@ export function ImageStudio() {
       <SocialExportModal
         open={socialExportOpen}
         onOpenChange={setSocialExportOpen}
-        imageUrl={activeImageUrl}
+        imageUrl={activeImageUrl || ''}
         imageName={imagePrompt.slice(0, 30) || 'generated-image'}
       />
     </div>

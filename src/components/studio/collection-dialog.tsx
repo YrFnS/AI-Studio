@@ -268,7 +268,6 @@ export function AddToCollectionPopover({
               className={`h-3 w-3 shrink-0 rounded-full ring-2 ring-offset-1 ring-offset-[#0a0a0a] transition-all duration-200 ${isIn ? '' : 'ring-transparent'}`}
               style={{
                 backgroundColor: col.color,
-                // @ts-expect-error ringColor is a valid CSS custom property for Tailwind
                 '--tw-ring-color': isIn ? col.color : 'transparent',
               } as React.CSSProperties}
             />

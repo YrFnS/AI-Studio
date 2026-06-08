@@ -976,7 +976,7 @@ function CustomModelsSection() {
     setSelectedDiscoveredId('');
 
     // Look at provider's existing models to determine primary type
-    const providerModels = models.filter((m) => m.provider?.name === providerId || m.providerId === providerId);
+    const providerModels = models.filter((m) => m.provider?.name === providerId);
     if (providerModels.length > 0) {
       const imageCount = providerModels.filter((m) => m.type === 'image').length;
       const videoCount = providerModels.filter((m) => m.type === 'video').length;

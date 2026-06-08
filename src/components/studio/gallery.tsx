@@ -142,7 +142,7 @@ const cardVariants = {
     opacity: 1,
     y: 0,
     scale: 1,
-    transition: { type: 'spring', stiffness: 300, damping: 24 },
+    transition: { type: 'spring' as const, stiffness: 300, damping: 24 },
   },
   exit: {
     opacity: 0,
@@ -156,7 +156,7 @@ const floatingBarVariants = {
   visible: {
     y: 0,
     opacity: 1,
-    transition: { type: 'spring', stiffness: 300, damping: 28 },
+    transition: { type: 'spring' as const, stiffness: 300, damping: 28 },
   },
   exit: {
     y: 80,
@@ -686,9 +686,10 @@ export function Gallery() {
   // Load lightbox collection memberships ----------------------------------
   useEffect(() => {
     if (!lightboxItem) return;
+    const lbId = lightboxItem.id;
     async function load() {
       try {
-        const result = await idb.fetchCollectionItems([lightboxItem.id]);
+        const result = await idb.fetchCollectionItems([lbId]);
         setLightboxCollectionIds((result.items ?? []).map((i) => i.collectionId));
       } catch { /* non-critical */ }
     }
@@ -1413,7 +1414,7 @@ export function Gallery() {
                 className={`${getGridColsClass()} gap-3 md:gap-4`}
               >
                 <AnimatePresence mode="popLayout">
-                  {filteredGenerations.map((gen) => {
+                  {filteredGenerations.map((gen, idx) => {
                     const imageUrl = getImageUrl(gen);
                     const providerColor = gen.provider?.color || '#888';
                     const isDeleting = deletingId === gen.id;
@@ -1762,7 +1763,7 @@ export function Gallery() {
                     <span className="hidden sm:inline">Collection</span>
                   </Button>
                 </PopoverTrigger>
-                <PopoverContent className="w-56 glass-strong border-border/60 bg-[#111111]/95 p-2" align="bottom">
+                <PopoverContent className="w-56 glass-strong border-border/60 bg-[#111111]/95 p-2" align="end">
                   <div className="space-y-1">
                     <p className="px-2 py-1 text-[10px] text-muted-foreground uppercase tracking-wider font-medium">Add to collection</p>
                     {collections.length === 0 ? (

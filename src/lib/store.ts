@@ -119,6 +119,9 @@ interface AppState {
   // Auto-enhance prompt
   imageAutoEnhance: boolean;
   setImageAutoEnhance: (enabled: boolean) => void;
+  // Style preset
+  activeStylePreset: string;
+  setActiveStylePreset: (preset: string) => void;
   // Outfit change
   imageOutfitDescription: string;
   setImageOutfitDescription: (desc: string) => void;
@@ -362,6 +365,9 @@ export const useAppStore = create<AppState>()(
   // Auto-enhance prompt
   imageAutoEnhance: false,
   setImageAutoEnhance: (enabled) => set({ imageAutoEnhance: enabled }),
+  // Style preset
+  activeStylePreset: '',
+  setActiveStylePreset: (preset) => set({ activeStylePreset: preset }),
   // Outfit change
   imageOutfitDescription: '',
   setImageOutfitDescription: (desc) => set({ imageOutfitDescription: desc }),

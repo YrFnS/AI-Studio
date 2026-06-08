@@ -85,8 +85,8 @@ export function ImageUploadSlot({
         // Show preview with remove button
         <div className="relative group rounded-lg border border-border/40 overflow-hidden">
           <img
-            src={value}
-            alt={label}
+            src={value || ''}
+            alt={typeof label === 'string' ? label : 'upload'}
             className="h-24 w-full object-cover"
             onError={(e) => {
               (e.target as HTMLImageElement).style.display = 'none';

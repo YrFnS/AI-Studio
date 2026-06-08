@@ -108,7 +108,7 @@ export function SidebarPresets() {
   ].filter((v) => v !== 'none').length;
 
   const handleResetAllPresets = useCallback(() => {
-    setActiveStylePreset(null);
+    setActiveStylePreset('');
     setImageSubject('none');
     setImageDetailLevel('none');
     setImageComposition('none');
@@ -147,7 +147,7 @@ export function SidebarPresets() {
                 <button
                   key={preset.id}
                   type="button"
-                  onClick={() => setActiveStylePreset(isSelected ? null : preset.id)}
+                  onClick={() => setActiveStylePreset(isSelected ? '' : preset.id)}
                   className={'flex flex-col items-center justify-center gap-0.5 rounded-md border px-0.5 py-1 text-center min-w-0 overflow-hidden h-[44px] w-full transition-colors duration-150 ' + (isSelected ? 'border-[#d9ff00] text-[#d9ff00]' : 'border-transparent bg-surface/60 text-muted-foreground hover:bg-surface hover:text-foreground hover:border-border/40')}
                   style={isSelected ? { backgroundColor: preset.color + '15', color: preset.color, borderColor: preset.color } as React.CSSProperties : undefined}
                 >

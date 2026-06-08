@@ -50,7 +50,7 @@ export function useGalleryCollections({
     async function load() {
       try {
         const cols = await data.fetchCollections();
-        if (!cancelled && mountedRef.current) setCollections(cols);
+        if (!cancelled && mountedRef.current) setCollections(cols as unknown as CollectionWithCount[]);
       } catch { /* non-critical */ }
     }
     load();
