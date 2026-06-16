@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
+import { getAllCustomModels } from '@/lib/idb';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import {
@@ -927,6 +928,27 @@ export function CinemaStudio() {
         const res = await fetch('/api/providers');
         if (!res.ok) throw new Error('Failed to fetch');
         const data: Provider[] = await res.json();
+
+        // Merge custom models from IndexedDB
+        try {
+          const customModels = await getAllCustomModels();
+          for (const cm of customModels) {
+            const provider = data.find((p) => p.name === cm.providerId || p.id === cm.providerId);
+            if (provider) {
+              provider.models.push({
+                id: `custom-${cm.id}`,
+                name: cm.name,
+                modelId: cm.modelId,
+                type: cm.type,
+                capabilities: cm.capabilities,
+                description: cm.description || '',
+                priceInfo: cm.priceInfo || '',
+                isDefault: false,
+              });
+            }
+          }
+        } catch { /* non-critical */ }
+
         setProviders(data);
 
         if (!selectedProvider && data.length > 0) {

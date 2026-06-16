@@ -36,7 +36,7 @@ import {
 
 import { useAppStore } from '@/lib/store';
 import type { GenerationQueueItem } from '@/lib/store';
-import { saveReferenceImage } from '@/lib/idb';
+import { saveReferenceImage, getAllCustomModels } from '@/lib/idb';
 import { useApiKeys } from '@/hooks/use-api-keys';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -1137,6 +1137,27 @@ export function VideoStudio() {
         const res = await fetch('/api/providers');
         if (!res.ok) throw new Error('Failed to fetch');
         const data: Provider[] = await res.json();
+
+        // Merge custom models from IndexedDB
+        try {
+          const customModels = await getAllCustomModels();
+          for (const cm of customModels) {
+            const provider = data.find((p) => p.name === cm.providerId || p.id === cm.providerId);
+            if (provider) {
+              provider.models.push({
+                id: `custom-${cm.id}`,
+                name: cm.name,
+                modelId: cm.modelId,
+                type: cm.type,
+                capabilities: cm.capabilities,
+                description: cm.description || '',
+                priceInfo: cm.priceInfo || '',
+                isDefault: false,
+              });
+            }
+          }
+        } catch { /* non-critical */ }
+
         setProviders(data);
 
         // Auto-select first provider that has video models and an API key

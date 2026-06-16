@@ -102,7 +102,7 @@ import { PromptLibrary } from '@/components/studio/prompt-library';
 import { SocialExportModal } from '@/components/social-export-modal';
 import { ImageUpload } from '@/components/studio/image-upload';
 import { ReferenceImagePicker } from '@/components/studio/reference-image-picker';
-import { saveReferenceImage } from '@/lib/idb';
+import { saveReferenceImage, getAllCustomModels } from '@/lib/idb';
 import { RecentBar } from '@/components/studio/recent-bar';
 import { RecentGenerations } from '@/components/studio/recent-generations';
 import { PromptSuggestions } from '@/components/studio/prompt-suggestions';
@@ -3383,6 +3383,27 @@ export function ImageStudio() {
         const res = await fetch('/api/providers');
         if (!res.ok) throw new Error('Failed to fetch');
         const data: Provider[] = await res.json();
+
+        // Merge custom models from IndexedDB
+        try {
+          const customModels = await getAllCustomModels();
+          for (const cm of customModels) {
+            const provider = data.find((p) => p.name === cm.providerId || p.id === cm.providerId);
+            if (provider) {
+              provider.models.push({
+                id: `custom-${cm.id}`,
+                name: cm.name,
+                modelId: cm.modelId,
+                type: cm.type,
+                capabilities: cm.capabilities,
+                description: cm.description || '',
+                priceInfo: cm.priceInfo || '',
+                isDefault: false,
+              });
+            }
+          }
+        } catch { /* non-critical */ }
+
         setProviders(data);
 
         // Auto-select first provider that has an API key
