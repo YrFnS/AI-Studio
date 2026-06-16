@@ -150,6 +150,36 @@ export async function generateAIMLAPI(params: GenerateParams, apiKey: string, pr
 }
 
 export async function generateGoogle(params: GenerateParams, apiKey: string, providerBaseUrl: string) {
+  // Gemini image models (e.g. gemini-2.5-flash-image) use generateContent endpoint
+  // Imagen models (e.g. imagen-4.0-generate-001) use :predict endpoint
+  const isGeminiImage = params.model.startsWith('gemini-');
+
+  if (isGeminiImage) {
+    // Gemini API format — uses contents/parts
+    const body: Record<string, unknown> = {
+      contents: [{ parts: [{ text: params.prompt }] }],
+      generationConfig: { responseModalities: ['TEXT', 'IMAGE'] },
+    };
+    const response = await fetch(`${providerBaseUrl}/models/${params.model}:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) { const error = await response.text(); throw new Error(`Google Gemini API error: ${response.status} - ${error}`); }
+    const data = await response.json();
+    // Extract inline image data from candidates
+    const images: string[] = [];
+    for (const candidate of (data.candidates || [])) {
+      for (const part of (candidate?.content?.parts || [])) {
+        if (part.inlineData?.data) {
+          images.push(`data:${part.inlineData.mimeType || 'image/png'};base64,${part.inlineData.data}`);
+        }
+      }
+    }
+    return images;
+  }
+
+  // Imagen API format — uses instances/parameters with :predict
   const body: Record<string, unknown> = { instances: [{ prompt: params.prompt }], parameters: { sampleCount: params.batchSize || 1, aspectRatio: params.aspectRatio || '1:1' } };
   if (params.negativePrompt) (body.parameters as Record<string, unknown>).negativePrompt = params.negativePrompt;
   if (params.seed) (body.parameters as Record<string, unknown>).seed = params.seed;

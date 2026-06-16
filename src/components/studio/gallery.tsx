@@ -260,11 +260,8 @@ export function Gallery() {
   // Fetch collections -----------------------------------------------------
   const fetchCollections = useCallback(async () => {
     try {
-      const res = await fetch('/api/collections');
-      if (res.ok) {
-        const data = await res.json();
-        setCollections(data.collections ?? []);
-      }
+      const cols = await idb.fetchCollections();
+      setCollections(cols as unknown as CollectionWithCount[]);
     } catch { /* non-critical */ }
   }, []);
 
@@ -281,17 +278,14 @@ export function Gallery() {
     }
     async function loadCollectionMemberships() {
       try {
-        const ids = generations.map((g) => g.id).join(',');
-        const res = await fetch(`/api/collections/items?generationIds=${ids}`);
-        if (res.ok) {
-          const data = await res.json();
-          const map: Record<string, string[]> = {};
-          for (const item of (data.items ?? [])) {
-            if (!map[item.generationId]) map[item.generationId] = [];
-            map[item.generationId].push(item.collectionId);
-          }
-          setGenCollectionMap(map);
+        const ids = generations.map((g) => g.id);
+        const result = await idb.fetchCollectionItems(ids);
+        const map: Record<string, string[]> = {};
+        for (const item of (result.items ?? [])) {
+          if (!map[item.generationId]) map[item.generationId] = [];
+          map[item.generationId].push(item.collectionId);
         }
+        setGenCollectionMap(map);
       } catch { /* non-critical */ }
     }
     loadCollectionMemberships();
@@ -306,21 +300,37 @@ export function Gallery() {
         setLoading(true);
       }
 
-      let url = `/api/gallery?filter=${galleryFilter}&page=${pageNum}&limit=${PAGE_SIZE}`;
-      if (galleryFilter === 'collection' && selectedCollectionId) {
-        url += `&collectionId=${selectedCollectionId}`;
-      }
-      const res = await fetch(url);
-      if (!res.ok) throw new Error('Failed to fetch');
-      const data = await res.json();
+      const result = await idb.fetchGenerations({
+        filter: (galleryFilter === 'collection' ? 'all' : galleryFilter) as 'all' | 'image' | 'video' | 'favorite',
+        collectionId: galleryFilter === 'collection' ? selectedCollectionId || undefined : undefined,
+        page: pageNum,
+        limit: PAGE_SIZE,
+      });
+
+      const mapped = result.generations.map((g) => ({
+        id: g.id,
+        providerId: g.providerId,
+        modelId: g.modelId,
+        type: g.type,
+        prompt: g.prompt,
+        negativePrompt: g.negativePrompt || null,
+        resultUrl: g.resultUrl || null,
+        resultData: g.resultData || null,
+        thumbnailUrl: g.thumbnailUrl || null,
+        isFavorite: g.isFavorite,
+        status: g.status,
+        parentGenerationId: g.parentGenerationId || null,
+        createdAt: new Date(g.createdAt).toISOString(),
+        provider: g.providerName ? { name: g.providerName, displayName: g.providerName, color: null } : null,
+      }));
 
       if (append) {
-        setGenerations((prev) => [...prev, ...(data.generations ?? [])]);
+        setGenerations((prev) => [...prev, ...mapped]);
       } else {
-        setGenerations(data.generations ?? []);
+        setGenerations(mapped);
       }
-      setTotal(data.total ?? 0);
-      setHasMore(data.hasMore ?? false);
+      setTotal(result.total);
+      setHasMore(result.hasMore);
     } catch {
       toast.error('Failed to load gallery');
     } finally {
@@ -366,11 +376,17 @@ export function Gallery() {
   useEffect(() => {
     async function loadStats() {
       try {
-        const res = await fetch('/api/stats');
-        if (res.ok) {
-          const data = await res.json();
-          setStats(data);
-        }
+        const s = await idb.fetchStats();
+        setStats({
+          totalGenerations: s.totalGenerations,
+          totalImages: s.totalImages,
+          totalVideos: s.totalVideos,
+          totalFavorites: s.totalFavorites,
+          topProviders: [],
+          topModels: [],
+          recentCount: s.recentCount,
+          avgPerDay: s.avgPerDay,
+        });
       } catch { /* non-critical */ }
     }
     loadStats();
@@ -380,12 +396,7 @@ export function Gallery() {
   const handleFavoriteToggle = useCallback(
     async (id: string, currentFavorite: boolean) => {
       try {
-        const res = await fetch('/api/gallery', {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id, isFavorite: !currentFavorite }),
-        });
-        if (!res.ok) throw new Error('Failed to update');
+        await idb.toggleGenerationFavorite(id, !currentFavorite);
         toast.success(currentFavorite ? 'Removed from favorites' : 'Added to favorites');
         setGenerations((prev) =>
           prev.map((g) => (g.id === id ? { ...g, isFavorite: !currentFavorite } : g))
@@ -502,11 +513,7 @@ export function Gallery() {
     const toUnfav = selected.filter((g) => g.isFavorite);
     try {
       const promises = [...toFav, ...toUnfav].map((g) =>
-        fetch('/api/gallery', {
-          method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ id: g.id, isFavorite: !g.isFavorite }),
-        })
+        idb.toggleGenerationFavorite(g.id, !g.isFavorite)
       );
       await Promise.all(promises);
       toast.success(`Updated ${gallerySelectedIds.length} items`);
@@ -534,7 +541,7 @@ export function Gallery() {
   const handleBatchDelete = useCallback(async () => {
     try {
       const promises = gallerySelectedIds.map((id) =>
-        fetch(`/api/gallery?id=${id}`, { method: 'DELETE' })
+        idb.deleteGeneration(id)
       );
       await Promise.all(promises);
       toast.success(`Deleted ${gallerySelectedIds.length} items`);
@@ -550,11 +557,7 @@ export function Gallery() {
   const handleBatchAddToCollection = useCallback(async (collectionId: string) => {
     try {
       const promises = gallerySelectedIds.map((genId) =>
-        fetch('/api/collections/items', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ collectionId, generationId: genId }),
-        })
+        idb.addToCollection(collectionId, genId)
       );
       await Promise.all(promises);
       toast.success(`Added ${gallerySelectedIds.length} items to collection`);

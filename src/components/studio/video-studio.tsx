@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, useCallback, useRef } from 'react';
+import * as idb from '@/lib/data';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import {
@@ -1423,11 +1424,7 @@ export function VideoStudio() {
   // Favorite helper --------------------------------------------------------
   const handleFavorite = useCallback(async (id: string) => {
     try {
-      await fetch('/api/gallery', {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, isFavorite: true }),
-      });
+      await idb.toggleGenerationFavorite(id, true);
       toast.success('Added to favorites');
     } catch {
       toast.error('Failed to favorite');
