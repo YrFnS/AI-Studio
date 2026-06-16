@@ -150,7 +150,7 @@ export async function generateAIMLAPI(params: GenerateParams, apiKey: string, pr
 }
 
 export async function generateGoogle(params: GenerateParams, apiKey: string, providerBaseUrl: string) {
-  // Gemini image models (e.g. gemini-2.5-flash-image) use generateContent endpoint
+  // Gemini image models (e.g. gemini-2.5-flash-preview-image) use generateContent endpoint
   // Imagen models (e.g. imagen-4.0-generate-001) use :predict endpoint
   const isGeminiImage = params.model.startsWith('gemini-');
 
