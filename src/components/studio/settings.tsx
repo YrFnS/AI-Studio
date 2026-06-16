@@ -812,8 +812,11 @@ function CustomModelsSection() {
   const [discovering, setDiscovering] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
 
+  const hasFetchedRef = useRef(false);
+
   // Fetch models and providers ------------------------------------------------
-  const fetchData = useCallback(async (options?: { fetchDynamic?: boolean }) => {
+  const fetchData = useCallback(async (options?: { fetchDynamic?: boolean; force?: boolean }) => {
+    if (!options?.force && hasFetchedRef.current && !options?.fetchDynamic) return;
     try {
       setLoading(true);
       setRefreshError(null);
@@ -841,6 +844,7 @@ function CustomModelsSection() {
         supportsDiscovery: providerSupportsDiscovery(p.name),
       }));
       setProviders(enrichedProviders as Provider[]);
+      hasFetchedRef.current = true;
     } catch {
       toast.error('Failed to load models');
     } finally {
@@ -853,7 +857,7 @@ function CustomModelsSection() {
     setDiscovering(true);
     setDiscoverError(null);
     try {
-      await fetchData({ fetchDynamic: true });
+      await fetchData({ fetchDynamic: true, force: true });
       toast.success('Models refreshed from provider APIs');
     } catch {
       setRefreshError('Failed to discover models from providers');
@@ -864,7 +868,8 @@ function CustomModelsSection() {
 
   useEffect(() => {
     fetchData();
-  }, [fetchData]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Model stats ---------------------------------------------------------------
   const modelStats = useMemo(() => {
