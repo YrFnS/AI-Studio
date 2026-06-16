@@ -1151,7 +1151,7 @@ function CustomModelsSection() {
       toast.success(`Model "${formName}" added successfully`);
       resetForm();
       setDialogOpen(false);
-      fetchData();
+      fetchData({ force: true });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : 'Failed to add model');
     } finally {
@@ -1166,7 +1166,7 @@ function CustomModelsSection() {
       try {
         await deleteCustomModel(modelId);
         toast.success(`Model "${modelName}" removed`);
-        fetchData();
+        fetchData({ force: true });
       } catch {
         toast.error('Failed to delete model');
       } finally {
