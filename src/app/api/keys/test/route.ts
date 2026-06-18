@@ -40,6 +40,20 @@ export async function POST(req: NextRequest) {
           valid = res.ok;
           break;
         }
+        case 'huggingface': {
+          // Use a lightweight, free model for validation (FLUX.1-schnell is always available)
+          const res = await fetch(
+            'https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell',
+            {
+              method: 'POST',
+              headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ inputs: 'test' }),
+            }
+          );
+          // 200 = key works, 401/403 = invalid key, 503 = model loading (key is still valid)
+          valid = res.ok || res.status === 503;
+          break;
+        }
         default:
           // For other providers, assume valid if key is non-empty
           valid = key.length > 8;
