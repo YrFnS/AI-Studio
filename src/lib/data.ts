@@ -12,6 +12,37 @@ import type {
 
 export type { GenerationRecord, CollectionRecord, CollectionItemRecord, PromptRecord };
 
+const DEMO_GALLERY_KEY = 'ai-studio-demo-gallery-v1';
+const DEMO_GENERATIONS: GenerationRecord[] = [
+  {
+    id: 'demo-neon-city', providerId: 'demo', providerName: 'AI Studio Demo', modelId: 'flux-demo',
+    type: 'image', prompt: 'A cinematic neon city after rain, reflective streets and atmospheric light',
+    resultUrl: 'https://images.unsplash.com/photo-1519608487953-e999c86e7455?auto=format&fit=crop&w=1400&q=85',
+    status: 'completed', isFavorite: true, width: 1400, height: 933, createdAt: Date.now() - 60 * 60 * 1000,
+  },
+  {
+    id: 'demo-desert-future', providerId: 'demo', providerName: 'AI Studio Demo', modelId: 'flux-demo',
+    type: 'image', prompt: 'Futuristic desert architecture at golden hour, editorial concept art',
+    resultUrl: 'https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=1400&q=85',
+    status: 'completed', isFavorite: false, width: 1400, height: 933, createdAt: Date.now() - 3 * 60 * 60 * 1000,
+  },
+  {
+    id: 'demo-abstract-color', providerId: 'demo', providerName: 'AI Studio Demo', modelId: 'flux-demo',
+    type: 'image', prompt: 'Vibrant abstract color study with fluid gradients and luminous texture',
+    resultUrl: 'https://images.unsplash.com/photo-1550859492-d5da9d8e45f3?auto=format&fit=crop&w=1400&q=85',
+    status: 'completed', isFavorite: false, width: 1400, height: 933, createdAt: Date.now() - 24 * 60 * 60 * 1000,
+  },
+];
+
+async function ensureDemoGallery() {
+  if (typeof window === 'undefined' || localStorage.getItem(DEMO_GALLERY_KEY)) return;
+  const { total } = await idb.getGenerations({ limit: 1 });
+  if (total === 0) {
+    for (const generation of DEMO_GENERATIONS) await idb.saveGeneration(generation);
+  }
+  localStorage.setItem(DEMO_GALLERY_KEY, 'seeded');
+}
+
 // ---------------------------------------------------------------------------
 // Generations
 // ---------------------------------------------------------------------------
@@ -22,6 +53,7 @@ export async function fetchGenerations(options?: {
   page?: number;
   limit?: number;
 }) {
+  await ensureDemoGallery();
   const page = options?.page || 1;
   const limit = options?.limit || 20;
   const offset = (page - 1) * limit;
