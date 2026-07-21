@@ -12,7 +12,8 @@ import type {
 
 export type { GenerationRecord, CollectionRecord, CollectionItemRecord, PromptRecord };
 
-const DEMO_GALLERY_KEY = 'ai-studio-demo-gallery-v1';
+const DEMO_GALLERY_KEY = 'ai-studio-demo-data-v2';
+const DEMO_REFERENCE_IMAGE = 'https://images.unsplash.com/photo-1521737604893-d14cc237f11d?auto=format&fit=crop&w=1400&q=85';
 const DEMO_GENERATIONS: GenerationRecord[] = [
   {
     id: 'demo-neon-city', providerId: 'demo', providerName: 'AI Studio Demo', modelId: 'flux-demo',
@@ -39,6 +40,44 @@ async function ensureDemoGallery() {
   const { total } = await idb.getGenerations({ limit: 1 });
   if (total === 0) {
     for (const generation of DEMO_GENERATIONS) await idb.saveGeneration(generation);
+  }
+
+  if ((await idb.getAllPrompts()).length === 0) {
+    await idb.savePrompt({
+      id: 'demo-prompt-cinematic',
+      text: 'Cinematic product portrait with soft studio light, premium editorial composition',
+      category: 'product', isFavorite: true, providerName: 'AI Studio Demo', modelName: 'Flux Demo',
+      usageCount: 3, createdAt: Date.now() - 30 * 60 * 1000, updatedAt: Date.now() - 30 * 60 * 1000,
+    });
+  }
+
+  if ((await idb.getAllCollections()).length === 0) {
+    await idb.saveCollection({
+      id: 'demo-collection-client-concepts', name: 'Client Concepts',
+      description: 'Polished concepts ready for the client demo', color: '#d9ff00', icon: 'sparkles',
+      createdAt: Date.now() - 45 * 60 * 1000, updatedAt: Date.now() - 45 * 60 * 1000,
+    });
+    await idb.addToCollection('demo-collection-client-concepts', 'demo-neon-city');
+  }
+
+  if ((await idb.getRecentReferenceImages(1)).length === 0) {
+    await idb.saveReferenceImage(DEMO_REFERENCE_IMAGE, 'Creative team reference');
+  }
+
+  if ((await idb.getAllCustomModels()).length === 0) {
+    await idb.saveCustomModel({
+      providerId: 'demo', providerName: 'AI Studio Demo', name: 'Client Concept XL',
+      modelId: 'client-concept-xl', type: 'image', capabilities: 'text-to-image,image-to-image',
+      description: 'Demo model preset for polished client concepts', priceInfo: 'Demo',
+    });
+  }
+
+  if ((await idb.getAllDiscoveredModels()).length === 0) {
+    await idb.saveDiscoveredModels([{
+      id: 'demo-flux-discovered', providerName: 'AI Studio Demo', modelId: 'flux-demo',
+      name: 'Flux Demo', type: 'image', capabilities: 'text-to-image',
+      description: 'Locally cached model metadata for the demo', priceInfo: 'Demo', fetchedAt: Date.now(),
+    }]);
   }
   localStorage.setItem(DEMO_GALLERY_KEY, 'seeded');
 }
@@ -107,6 +146,7 @@ export async function fetchStats() {
 // ---------------------------------------------------------------------------
 
 export async function fetchCollections() {
+  await ensureDemoGallery();
   return idb.getAllCollections();
 }
 
@@ -156,6 +196,7 @@ export async function fetchCollectionItems(generationIds: string[]) {
 // ---------------------------------------------------------------------------
 
 export async function fetchPrompts() {
+  await ensureDemoGallery();
   return idb.getAllPrompts();
 }
 
