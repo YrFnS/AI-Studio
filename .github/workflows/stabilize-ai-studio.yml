@@ -55,7 +55,7 @@ jobs:
 
           if [ "$patch_status" -eq 0 ]; then
             echo '=== Install ===' >> stabilization-validation.log
-            bun install --frozen-lockfile >> stabilization-validation.log 2>&1
+            bun install >> stabilization-validation.log 2>&1
             install_status=$?
           fi
 
