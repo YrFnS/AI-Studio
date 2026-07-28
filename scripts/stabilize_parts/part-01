@@ -126,7 +126,9 @@ export async function resolveImageBlob(
 
 write(
     "src/lib/server/remote-image.test.ts",
-    r'''import { describe, expect, test } from 'bun:test';
+    r'''/// <reference types="bun-types" />
+
+import { describe, expect, test } from 'bun:test';
 import { isPrivateIpAddress } from './remote-image';
 
 describe('isPrivateIpAddress', () => {
