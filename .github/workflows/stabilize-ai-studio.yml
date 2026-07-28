@@ -1,9 +1,6 @@
 name: Temporary AI Studio stabilization
 
 on:
-  push:
-    branches:
-      - agent/stabilize-ai-studio-20260728
   pull_request:
     branches:
       - main
@@ -86,7 +83,7 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
 
           if [ "$compile_status" -ne 0 ] || [ "$patch_status" -ne 0 ] || [ "$install_status" -ne 0 ] || [ "$test_status" -ne 0 ] || [ "$typecheck_status" -ne 0 ] || [ "$lint_status" -ne 0 ] || [ "$build_status" -ne 0 ]; then
-            git add stabilization-validation.log
+            git add -f stabilization-validation.log
             git commit -m 'chore: record stabilization failure [stabilization-failed]'
             git push origin "HEAD:${TARGET_BRANCH}"
             exit 1
