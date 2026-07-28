@@ -89,7 +89,7 @@ jobs:
             exit 1
           fi
 
-          rm -rf scripts/stabilize_parts scripts/stabilize_ai_studio.py stabilization-validation.log
+          rm -rf scripts/stabilize_parts scripts/stabilize_ai_studio.py scripts/__pycache__ stabilization-validation.log .github/workflows/ci.yml
           git add -A
           git commit -m 'stabilize generation and gallery workflows [stabilized]'
           git push origin "HEAD:${TARGET_BRANCH}"
