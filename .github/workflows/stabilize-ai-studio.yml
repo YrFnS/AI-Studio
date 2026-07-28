@@ -4,18 +4,21 @@ on:
   push:
     branches:
       - agent/stabilize-ai-studio-20260728
+  pull_request:
+    branches:
+      - main
 
 permissions:
   contents: write
 
 jobs:
   stabilize:
-    if: ${{ !contains(github.event.head_commit.message, '[stabilized]') && !contains(github.event.head_commit.message, '[stabilization-failed]') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.head_ref || github.ref_name }}
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -23,8 +26,17 @@ jobs:
 
       - name: Apply and validate stabilization
         shell: bash
+        env:
+          TARGET_BRANCH: ${{ github.head_ref || github.ref_name }}
         run: |
           set +e
+
+          head_message="$(git log -1 --pretty=%B)"
+          if [[ "$head_message" == *"[stabilized]"* ]] || [[ "$head_message" == *"[stabilization-failed]"* ]]; then
+            echo 'Stabilization runner already completed for this head commit.'
+            exit 0
+          fi
+
           cat scripts/stabilize_parts/part-* > scripts/stabilize_ai_studio.py
           : > stabilization-validation.log
 
@@ -76,11 +88,11 @@ jobs:
           if [ "$compile_status" -ne 0 ] || [ "$patch_status" -ne 0 ] || [ "$install_status" -ne 0 ] || [ "$test_status" -ne 0 ] || [ "$typecheck_status" -ne 0 ] || [ "$lint_status" -ne 0 ] || [ "$build_status" -ne 0 ]; then
             git add stabilization-validation.log
             git commit -m 'chore: record stabilization failure [stabilization-failed]'
-            git push origin "HEAD:${GITHUB_REF_NAME}"
+            git push origin "HEAD:${TARGET_BRANCH}"
             exit 1
           fi
 
           rm -rf scripts/stabilize_parts scripts/stabilize_ai_studio.py stabilization-validation.log
           git add -A
           git commit -m 'stabilize generation and gallery workflows [stabilized]'
-          git push origin "HEAD:${GITHUB_REF_NAME}"
+          git push origin "HEAD:${TARGET_BRANCH}"
