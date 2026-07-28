@@ -87,7 +87,7 @@ async function assertPublicHostname(hostname: string): Promise<void> {
 }
 
 function dataUrlToBlob(value: string): Blob {
-  const match = value.match(/^data:([^;,]+)?(;base64)?,(.*)$/s);
+  const match = value.match(/^data:([^;,]+)?(;base64)?,([\s\S]*)$/);
   if (!match) throw new Error('Invalid image data URL');
 
   const contentType = match[1] || 'application/octet-stream';
