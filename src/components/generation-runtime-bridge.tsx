@@ -26,6 +26,11 @@ interface RuntimeBridgeHandle {
   restore: () => void;
 }
 
+type FetchCall = (
+  input: RequestInfo | URL,
+  init?: RequestInit,
+) => Promise<Response>;
+
 declare global {
   interface Window {
     __aiStudioRuntimeBridge?: RuntimeBridgeHandle;
@@ -229,7 +234,8 @@ function jsonResponse(payload: Record<string, unknown>, status = 200): Response 
 function installRuntimeBridge(): () => void {
   if (window.__aiStudioRuntimeBridge) return () => undefined;
 
-  const originalFetch = window.fetch.bind(window) as typeof window.fetch;
+  const nativeFetch = window.fetch;
+  const originalFetch = nativeFetch.bind(window) as FetchCall;
   const activeJobs = new Map<string, GenerationContext>();
 
   const normalizeGallerySelection = () => {
@@ -242,7 +248,7 @@ function installRuntimeBridge(): () => void {
   normalizeGallerySelection();
   const unsubscribe = useAppStore.subscribe(normalizeGallerySelection);
 
-  const wrappedFetch: typeof window.fetch = async (input, init) => {
+  const wrappedFetchImplementation: FetchCall = async (input, init) => {
     const url = getRequestUrl(input);
     const method = getRequestMethod(input, init);
 
@@ -345,10 +351,17 @@ function installRuntimeBridge(): () => void {
     return response;
   };
 
+  const nativePreconnect = nativeFetch.preconnect;
+  const wrappedFetch = Object.assign(wrappedFetchImplementation, {
+    preconnect: typeof nativePreconnect === 'function'
+      ? nativePreconnect.bind(nativeFetch)
+      : () => undefined,
+  }) as typeof window.fetch;
+
   window.fetch = wrappedFetch;
 
   const restore = () => {
-    if (window.fetch === wrappedFetch) window.fetch = originalFetch;
+    if (window.fetch === wrappedFetch) window.fetch = nativeFetch;
     unsubscribe();
     delete window.__aiStudioRuntimeBridge;
   };
