@@ -156,7 +156,7 @@ export default function Home() {
               <span className="text-[#d9ff00]/60 font-medium">100+</span> Models
             </span>
             <span className="inline-flex items-center rounded-md border border-white/[0.08] bg-white/[0.03] px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground/70 animate-version-shift">
-              v1.0
+              v0.2.0
             </span>
           </div>
         </div>

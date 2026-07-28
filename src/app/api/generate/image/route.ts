@@ -47,7 +47,8 @@ export async function POST(req: NextRequest) {
       case 'google-aistudio': result = await generateGoogle(params, apiKey, provider.baseUrl); break;
       case 'leonardo': result = await generateLeonardo(params, apiKey, provider.baseUrl); break;
       case 'recraft': result = await generateRecraft(params, apiKey, provider.baseUrl); break;
-      default: result = await generateOpenAI(params, apiKey, provider.baseUrl);
+      case 'google-vertex': throw new Error('Google Vertex AI image generation requires project and location credentials and is not configured by this browser-key flow.');
+      default: throw new Error(`Image generation is not supported for provider: ${provider.displayName}`);
     }
 
     if (!Array.isArray(result) && typeof result === 'object' && 'jobId' in result) {

@@ -129,6 +129,10 @@ export async function deleteGeneration(id: string) {
   return idb.deleteGeneration(id);
 }
 
+export async function clearAllGenerations() {
+  return idb.clearAllGenerations();
+}
+
 export async function toggleGenerationFavorite(id: string, isFavorite: boolean) {
   return idb.updateGeneration(id, { isFavorite });
 }

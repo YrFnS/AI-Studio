@@ -1,28 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { PROVIDERS } from '@/lib/providers-data';
+import { resolveImageBlob } from '@/lib/server/remote-image';
 
 async function getProviderById(id: string) {
   return PROVIDERS.find((p) => p.id === id);
 }
 
-function base64ToBlob(base64: string, contentType = 'image/png'): Blob {
-  const raw = base64.includes(',') ? base64.split(',')[1] : base64;
-  const binary = atob(raw);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return new Blob([bytes], { type: contentType });
-}
-
-async function imageUrlToBlob(imageUrl: string): Promise<Blob> {
-  const response = await fetch(imageUrl);
-  if (!response.ok) throw new Error(`Failed to fetch image: ${response.status}`);
-  return response.blob();
-}
-
-async function resolveImageBlob(imageUrl: string): Promise<Blob> {
-  if (imageUrl.startsWith('data:')) return base64ToBlob(imageUrl);
-  return imageUrlToBlob(imageUrl);
-}
 
 async function variationStability(params: { imageUrl: string; prompt: string; negativePrompt?: string; variationStrength: number; modelId: string; seed?: number }, apiKey: string, providerBaseUrl: string) {
   const imageBlob = await resolveImageBlob(params.imageUrl);
@@ -92,7 +75,8 @@ export async function POST(req: NextRequest) {
       case 'stability': result = await variationStability({ imageUrl, prompt, negativePrompt, variationStrength: strength, modelId: modelId || 'stable-diffusion-3.5-large', seed }, apiKey, provider.baseUrl); break;
       case 'replicate': result = await variationReplicate({ imageUrl, prompt, negativePrompt, variationStrength: strength, modelId: modelId || '', seed }, apiKey, provider.baseUrl); break;
       case 'fal': result = await variationFal({ imageUrl, prompt, negativePrompt, variationStrength: strength, modelId: modelId || '', seed }, apiKey, provider.baseUrl); break;
-      default: result = await variationOpenAI({ imageUrl, prompt, modelId: modelId || '', variationStrength: strength }, apiKey, provider.baseUrl);
+      case 'openai': result = await variationOpenAI({ imageUrl, prompt, modelId: modelId || '', variationStrength: strength }, apiKey, provider.baseUrl); break;
+      default: throw new Error(`Image variations are not supported for provider: ${provider.displayName}`);
     }
 
     if (!('urls' in result) && 'jobId' in result) {

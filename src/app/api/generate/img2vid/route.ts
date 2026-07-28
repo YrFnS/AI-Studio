@@ -5,7 +5,7 @@ async function getProviderById(id: string) {
   return PROVIDERS.find((p) => p.id === id);
 }
 
-const I2V_PROVIDERS = ['runway', 'luma', 'fal', 'replicate', 'seedance'];
+const I2V_PROVIDERS = ['runway', 'luma', 'fal'];
 
 async function img2vidRunway(params: { prompt: string; model: string; duration: number; imageUrl: string; aspectRatio?: string }, apiKey: string) {
   const body: Record<string, unknown> = { model: params.model, promptText: params.prompt, promptImage: params.imageUrl };

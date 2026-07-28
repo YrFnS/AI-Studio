@@ -39,23 +39,18 @@ Multi-provider AI image and video generation studio built with Next.js, featurin
 # Install dependencies
 bun install
 
-# Set up the database
-bun run db:push
-
 # Start the dev server
 bun run dev
 ```
 
 The app will be available at `http://localhost:3000`.
 
-### Environment Variables
+### Validation
 
-Create a `.env` file in the project root:
-
-```env
-DATABASE_URL=file:./db/custom.db
+```bash
+bun run check
+bun run build
 ```
-
 
 ### Production Build
 
@@ -97,10 +92,7 @@ bun run start
 │   │   └── *.tsx               # Shared components
 │   ├── hooks/                  # Custom React hooks
 │   └── lib/                    # Utilities, store, DB client
-├── prisma/
-│   └── schema.prisma           # Database schema
 ├── public/                     # Static assets
-├── db/                         # SQLite database (gitignored)
 └── package.json
 ```
 
@@ -117,4 +109,4 @@ All data is stored client-side in IndexedDB — no server-side database needed:
 
 ## License
 
-Private project.
+No license file has been published yet.

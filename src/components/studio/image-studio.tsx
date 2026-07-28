@@ -61,6 +61,7 @@ import {
 
 import { useAppStore } from '@/lib/store';
 import * as data from '@/lib/data';
+import { beginGeneration, completeGeneration, createGenerationId, failGeneration, markGenerationProcessing, type GenerationDescriptor } from '@/lib/generation-persistence';
 import type { GenerationQueueItem } from '@/lib/store';
 import { useApiKeys } from '@/hooks/use-api-keys';
 import { Button } from '@/components/ui/button';
@@ -3335,6 +3336,8 @@ export function ImageStudio() {
   const [showNegPrompt, setShowNegPrompt] = useState(false);
 
   const [currentJobId, setCurrentJobId] = useState<string | null>(null);
+  const [generationResultIds, setGenerationResultIds] = useState<string[]>([]);
+  const generationRef = useRef<GenerationDescriptor | null>(null);
   const [showEditor, setShowEditor] = useState(false);
   const [socialExportOpen, setSocialExportOpen] = useState(false);
   const [editorImage, setEditorImage] = useState<string | null>(null);
@@ -3446,50 +3449,65 @@ export function ImageStudio() {
 
 
 
-  // Polling logic — sends apiKey from IndexedDB for async status checks --------
+  // Polling logic — API keys stay in the POST body, never in the URL.
   const startPolling = useCallback(
-    (generationId: string) => {
+    (providerJobId: string) => {
       if (pollRef.current) clearInterval(pollRef.current);
 
       pollRef.current = setInterval(async () => {
         try {
           const apiKey = await apiKeysHook.getKeyForProvider(selectedImageProvider);
-          const res = await fetch(`/api/generate/status?id=${generationId}${apiKey ? `&apiKey=${encodeURIComponent(apiKey)}` : ''}`);
-          if (!res.ok) throw new Error('Status check failed');
-          const data = await res.json();
+          if (!apiKey) throw new Error('API key is no longer available');
+          const res = await fetch('/api/generate/status', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              id: providerJobId,
+              apiKey,
+              provider: selectedImageProvider,
+              modelId: selectedImageModel,
+            }),
+          });
+          const statusData = await res.json();
+          if (!res.ok) throw new Error(statusData.error || 'Status check failed');
 
-          if (data.status === 'completed') {
+          if (statusData.status === 'completed') {
+            const allUrls = statusData.urls || (statusData.resultUrl ? [statusData.resultUrl] : []);
+            const descriptor = generationRef.current;
+            if (descriptor) {
+              const ids = await completeGeneration(descriptor, allUrls, providerJobId);
+              setGenerationResultIds(ids);
+            }
             setIsImageGenerating(false);
-            const allUrls = data.urls || (data.resultUrl ? [data.resultUrl] : []);
-            setLatestResult(data.resultUrl || data.urls?.[0] || null);
+            setLatestResult(statusData.resultUrl || statusData.urls?.[0] || null);
             setGenerationResults(allUrls);
             setSelectedResultIndex(0);
             setCurrentJobId(null);
             setGenerationDuration(genStartTime ? (Date.now() - genStartTime) / 1000 : null);
-            if (queueIdRef.current) {
-              updateQueueItem(queueIdRef.current, { status: 'completed', resultUrl: data.resultUrl || data.urls?.[0] || undefined });
-              queueIdRef.current = null;
-            }
+            if (queueIdRef.current) updateQueueItem(queueIdRef.current, { status: 'completed', resultUrl: allUrls[0] || undefined });
+            queueIdRef.current = null;
+            generationRef.current = null;
             if (pollRef.current) clearInterval(pollRef.current);
             pollRef.current = null;
             toast.success(allUrls.length > 1 ? `${allUrls.length} images generated successfully!` : 'Image generated successfully!');
-          } else if (data.status === 'failed') {
+          } else if (statusData.status === 'failed') {
+            const descriptor = generationRef.current;
+            if (descriptor) await failGeneration(descriptor, statusData.error || 'Generation failed', providerJobId);
             setIsImageGenerating(false);
             setCurrentJobId(null);
-            if (queueIdRef.current) {
-              updateQueueItem(queueIdRef.current, { status: 'failed' });
-              queueIdRef.current = null;
-            }
+            if (queueIdRef.current) updateQueueItem(queueIdRef.current, { status: 'failed' });
+            queueIdRef.current = null;
+            generationRef.current = null;
             if (pollRef.current) clearInterval(pollRef.current);
             pollRef.current = null;
-            toast.error(data.error || 'Generation failed');
+            toast.error(statusData.error || 'Generation failed');
           }
-        } catch {
-          // retry next interval
+        } catch (error) {
+          console.error('Image status polling failed', error);
         }
       }, 3000);
     },
-    [setIsImageGenerating, setLatestResult, setGenerationResults, setSelectedResultIndex, setGenerationDuration, apiKeysHook, selectedImageProvider, updateQueueItem]
+    [setIsImageGenerating, setLatestResult, setGenerationResults, setSelectedResultIndex, setGenerationDuration, apiKeysHook, selectedImageProvider, selectedImageModel, updateQueueItem, genStartTime]
   );
 
   // Cleanup polling on unmount
@@ -3709,17 +3727,44 @@ export function ImageStudio() {
     addToQueue(queueItem);
     queueIdRef.current = queueItem.id;
 
+    const dimensions = RESOLUTION_MAP[currentAspectRatio]?.[currentResolutionTier] ?? RESOLUTION_MAP['1:1']['hd'];
+    const generation: GenerationDescriptor = {
+      id: queueItem.id,
+      providerId: selectedImageProvider,
+      providerName: selectedProviderData?.displayName || selectedImageProvider,
+      modelId: selectedImageModel,
+      type: 'image',
+      prompt: finalPrompt,
+      negativePrompt: finalNegPrompt || undefined,
+      inputImageUrl: currentInputImageUrl || undefined,
+      width: dimensions.width,
+      height: dimensions.height,
+      params: {
+        aspectRatio: currentAspectRatio, resolutionTier: currentResolutionTier, quality: currentQuality,
+        format: currentFormat, steps: currentSteps, guidance: currentGuidance, seed: currentSeed,
+        batchSize: currentBatchSize, strength: currentStrength, sampler: currentSampler,
+      },
+      createdAt: queueItem.createdAt,
+    };
+    generationRef.current = generation;
+    setGenerationResultIds([]);
+    await beginGeneration(generation);
+
     try {
       // Get API key from IndexedDB (BYOK model)
       const apiKey = await apiKeysHook.getKeyForProvider(selectedImageProvider);
       if (!apiKey) {
-        toast.error('No API key configured for this provider. Add one in Settings.');
+        const message = 'No API key configured for this provider. Add one in Settings.';
+        await failGeneration(generation, message);
+        updateQueueItem(queueItem.id, { status: 'failed' });
+        queueIdRef.current = null;
+        generationRef.current = null;
+        toast.error(message);
         setIsImageGenerating(false);
         return;
       }
 
-      // Compute dimensions from aspect ratio + resolution tier
-      const dimensions = RESOLUTION_MAP[currentAspectRatio]?.[currentResolutionTier] ?? RESOLUTION_MAP['1:1']['hd'];
+      // Compute provider size from the already-persisted generation dimensions.
       const computedSize = `${dimensions.width}x${dimensions.height}`;
 
       const isSDProvider = ['stability', 'replicate', 'fal', 'together', 'fireworks', 'huggingface'].includes(selectedImageProvider);
@@ -3782,31 +3827,35 @@ export function ImageStudio() {
         setSelectedResultIndex(0);
         setIsImageGenerating(false);
         setGenerationDuration((Date.now() - generationStartTime) / 1000);
-        if (queueIdRef.current) {
-          updateQueueItem(queueIdRef.current, { status: 'completed', resultUrl: data.urls[0] || undefined });
-          queueIdRef.current = null;
-        }
+        const ids = await completeGeneration(generation, data.urls);
+        setGenerationResultIds(ids);
+        if (queueIdRef.current) updateQueueItem(queueIdRef.current, { status: 'completed', resultUrl: data.urls[0] || undefined });
+        queueIdRef.current = null;
+        generationRef.current = null;
         toast.success(data.urls.length > 1 ? `${data.urls.length} images generated successfully!` : 'Image generated successfully!');
       } else if (data.status === 'processing' && data.id) {
         // Async – start polling
         setCurrentJobId(data.id);
+        await markGenerationProcessing(generation, data.id);
         startPolling(data.id);
         toast.info('Generation in progress…');
       } else {
+        const message = 'Unexpected response from server';
+        await failGeneration(generation, message);
         setIsImageGenerating(false);
-        if (queueIdRef.current) {
-          updateQueueItem(queueIdRef.current, { status: 'failed' });
-          queueIdRef.current = null;
-        }
-        toast.error('Unexpected response from server');
+        if (queueIdRef.current) updateQueueItem(queueIdRef.current, { status: 'failed' });
+        queueIdRef.current = null;
+        generationRef.current = null;
+        toast.error(message);
       }
     } catch (err) {
+      const message = err instanceof Error ? err.message : 'Generation failed';
+      await failGeneration(generation, message);
       setIsImageGenerating(false);
-      if (queueIdRef.current) {
-        updateQueueItem(queueIdRef.current, { status: 'failed' });
-        queueIdRef.current = null;
-      }
-      toast.error(err instanceof Error ? err.message : 'Generation failed');
+      if (queueIdRef.current) updateQueueItem(queueIdRef.current, { status: 'failed' });
+      queueIdRef.current = null;
+      generationRef.current = null;
+      toast.error(message);
     }
   }, [
     selectedImageProvider,
@@ -3853,7 +3902,7 @@ export function ImageStudio() {
   // Favorite helper --------------------------------------------------------
   const handleFavorite = useCallback(async (id: string) => {
     try {
-      await data.toggleGenerationFavorite(id, false);
+      await data.toggleGenerationFavorite(id, true);
       toast.success('Added to favorites');
     } catch {
       toast.error('Failed to favorite');
@@ -3867,155 +3916,138 @@ export function ImageStudio() {
     : latestResult;
 
   const handlePostGenAction = useCallback(async (action: 'upscale' | 'variation' | 'improve' | 'img2vid') => {
-    if (!latestResult) {
+    if (!activeImageUrl) {
       toast.error('No image to process');
       return;
     }
-    if (!hasApiKey) {
-      toast.error('No API key configured. Add one in Settings.');
-      return;
-    }
-    if (!selectedImageProvider || !selectedImageModel) {
-      toast.error('Please select a provider and model first');
+    if (!hasApiKey || !selectedImageProvider || !selectedImageModel) {
+      toast.error('Configure an API key, provider, and model first');
       return;
     }
 
     setPostGenAction(action);
     setIsPostGenProcessing(true);
     setPostGenResult(null);
+    let derivedGeneration: GenerationDescriptor | null = null;
 
     try {
       const apiKey = await apiKeysHook.getKeyForProvider(selectedImageProvider);
-      if (!apiKey) {
-        toast.error('No API key found for this provider');
-        setIsPostGenProcessing(false);
-        setPostGenAction(null);
-        return;
-      }
+      if (!apiKey) throw new Error('No API key found for this provider');
 
       let endpoint = '';
       let body: Record<string, unknown> = {};
-
       switch (action) {
-        case 'upscale': {
+        case 'upscale':
           endpoint = '/api/generate/upscale';
-          body = {
-            providerId: selectedImageProvider,
-            modelId: selectedImageModel,
-            imageUrl: activeImageUrl,
-            upscaleFactor: 2,
-            apiKey,
-          };
+          body = { providerId: selectedImageProvider, modelId: selectedImageModel, imageUrl: activeImageUrl, upscaleFactor: 2, apiKey };
           break;
-        }
-        case 'variation': {
+        case 'variation':
           endpoint = '/api/generate/variations';
-          body = {
-            providerId: selectedImageProvider,
-            modelId: selectedImageModel,
-            imageUrl: activeImageUrl,
-            prompt: imagePrompt || 'Generate a variation of this image',
-            variationStrength: 0.7,
-            negativePrompt: imageNegativePrompt || undefined,
-            apiKey,
-          };
+          body = { providerId: selectedImageProvider, modelId: selectedImageModel, imageUrl: activeImageUrl, prompt: imagePrompt || 'Generate a variation of this image', variationStrength: 0.7, negativePrompt: imageNegativePrompt || undefined, apiKey };
           break;
-        }
-        case 'improve': {
-          // "Improve" is basically a variation with low strength (keeps more of original)
+        case 'improve':
           endpoint = '/api/generate/variations';
-          body = {
-            providerId: selectedImageProvider,
-            modelId: selectedImageModel,
-            imageUrl: activeImageUrl,
-            prompt: `Enhanced, improved quality, better details, higher resolution version of: ${imagePrompt}`,
-            variationStrength: 0.4,
-            negativePrompt: 'low quality, blurry, distorted, deformed, ugly, bad anatomy',
-            apiKey,
-          };
+          body = { providerId: selectedImageProvider, modelId: selectedImageModel, imageUrl: activeImageUrl, prompt: `Enhanced, improved quality, better details, higher resolution version of: ${imagePrompt}`, variationStrength: 0.4, negativePrompt: 'low quality, blurry, distorted, deformed, ugly, bad anatomy', apiKey };
           break;
-        }
-        case 'img2vid': {
+        case 'img2vid':
           endpoint = '/api/generate/img2vid';
-          body = {
-            providerId: selectedImageProvider,
-            modelId: selectedImageModel,
-            imageUrl: activeImageUrl,
-            prompt: imagePrompt || 'Animate this image',
-            duration: 5,
-            apiKey,
-          };
+          body = { providerId: selectedImageProvider, modelId: selectedImageModel, imageUrl: activeImageUrl, prompt: imagePrompt || 'Animate this image', duration: 5, apiKey };
           break;
-        }
       }
 
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
+      derivedGeneration = {
+        id: createGenerationId(action === 'img2vid' ? 'vid' : 'img'),
+        providerId: selectedImageProvider,
+        providerName: selectedProviderData?.displayName || selectedImageProvider,
+        modelId: selectedImageModel,
+        type: action === 'img2vid' ? 'video' : 'image',
+        prompt: typeof body.prompt === 'string' ? body.prompt : `${action}: ${imagePrompt || 'generated image'}`,
+        negativePrompt: typeof body.negativePrompt === 'string' ? body.negativePrompt : undefined,
+        inputImageUrl: activeImageUrl,
+        parentGenerationId: generationResultIds[selectedResultIndex] || generationResultIds[0],
+        params: { ...body, action },
+        createdAt: Date.now(),
+      };
+      await beginGeneration(derivedGeneration);
 
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || `${action} failed`);
+      const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      const responseData = await res.json();
+      if (!res.ok) throw new Error(responseData.error || `${action} failed`);
 
-      if (data.status === 'completed' && data.urls?.[0]) {
-        setLatestResult(data.urls[0]);
-        setPostGenResult(data.urls[0]);
-        toast.success(`${action === 'upscale' ? 'Upscaled' : action === 'variation' ? 'Variation created' : action === 'improve' ? 'Image improved' : 'Video conversion started'}!`);
-      } else if (data.status === 'completed' && data.images?.[0]) {
-        setLatestResult(data.images[0]);
-        setPostGenResult(data.images[0]);
-        toast.success(`${action === 'upscale' ? 'Upscaled' : action === 'variation' ? 'Variation created' : 'Image improved'}!`);
-      } else if (data.status === 'processing' && data.id) {
-        // Start polling for async result (with cleanup ref and max retries)
+      const applyCompletedResult = async (urls: string[], providerJobId?: string) => {
+        if (!derivedGeneration) return;
+        const ids = await completeGeneration(derivedGeneration, urls, providerJobId);
+        const resultUrl = urls[0];
+        if (!resultUrl) throw new Error('Provider completed without a result');
+        setPostGenResult(resultUrl);
+        if (derivedGeneration.type === 'image') {
+          setLatestResult(resultUrl);
+          setGenerationResults(urls);
+          setGenerationResultIds(ids);
+          setSelectedResultIndex(0);
+        }
+      };
+
+      const immediateUrls = responseData.urls || responseData.images;
+      if (responseData.status === 'completed' && immediateUrls?.[0]) {
+        await applyCompletedResult(immediateUrls);
+        toast.success(action === 'img2vid' ? 'Video generated and saved to the gallery!' : `${action === 'upscale' ? 'Upscaled' : action === 'variation' ? 'Variation created' : 'Image improved'}!`);
+      } else if (responseData.status === 'processing' && responseData.id) {
+        await markGenerationProcessing(derivedGeneration, responseData.id);
         toast.info('Processing… This may take a moment.');
         postGenPollCountRef.current = 0;
         const pollInterval = setInterval(async () => {
           postGenPollCountRef.current += 1;
-          if (postGenPollCountRef.current > 60) { // max 3 minutes (60 * 3s)
+          if (postGenPollCountRef.current > 60) {
             clearInterval(pollInterval);
             postGenPollRef.current = null;
+            if (derivedGeneration) await failGeneration(derivedGeneration, 'Processing timed out', responseData.id);
             setIsPostGenProcessing(false);
             setPostGenAction(null);
-            toast.error('Processing timed out. Check your gallery for results.');
+            toast.error('Processing timed out. The failed job was saved in the gallery.');
             return;
           }
           try {
-            const sr = await fetch(`/api/generate/status?id=${data.id}${apiKey ? `&apiKey=${encodeURIComponent(apiKey)}` : ''}`);
-            const sd = await sr.json();
-            if (sd.status === 'completed') {
+            const statusRes = await fetch('/api/generate/status', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ id: responseData.id, apiKey, provider: selectedImageProvider, modelId: selectedImageModel }),
+            });
+            const statusData = await statusRes.json();
+            if (!statusRes.ok) throw new Error(statusData.error || 'Status check failed');
+            if (statusData.status === 'completed') {
               clearInterval(pollInterval);
               postGenPollRef.current = null;
-              const resultUrl = sd.resultUrl || sd.urls?.[0];
-              if (resultUrl) {
-                setLatestResult(resultUrl);
-                setPostGenResult(resultUrl);
-              }
+              const urls = statusData.urls || (statusData.resultUrl ? [statusData.resultUrl] : []);
+              await applyCompletedResult(urls, responseData.id);
               setIsPostGenProcessing(false);
               setPostGenAction(null);
-              toast.success(`${action === 'upscale' ? 'Upscaled' : action === 'variation' ? 'Variation created' : action === 'improve' ? 'Image improved' : 'Video generated'}!`);
-            } else if (sd.status === 'failed') {
+              toast.success(action === 'img2vid' ? 'Video generated and saved to the gallery!' : `${action === 'upscale' ? 'Upscaled' : action === 'variation' ? 'Variation created' : action === 'improve' ? 'Image improved' : 'Video generated'}!`);
+            } else if (statusData.status === 'failed') {
               clearInterval(pollInterval);
               postGenPollRef.current = null;
+              if (derivedGeneration) await failGeneration(derivedGeneration, statusData.error || `${action} failed`, responseData.id);
               setIsPostGenProcessing(false);
               setPostGenAction(null);
-              toast.error(sd.error || `${action} failed`);
+              toast.error(statusData.error || `${action} failed`);
             }
-          } catch {
-            // retry next interval
+          } catch (error) {
+            console.error('Post-generation polling failed', error);
           }
         }, 3000);
         postGenPollRef.current = pollInterval;
-        return; // don't reset processing state yet
+        return;
       } else {
         throw new Error('Unexpected response');
       }
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : `${action} failed`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : `${action} failed`;
+      if (derivedGeneration) await failGeneration(derivedGeneration, message);
+      toast.error(message);
     }
     setIsPostGenProcessing(false);
     setPostGenAction(null);
-  }, [latestResult, hasApiKey, selectedImageProvider, selectedImageModel, imagePrompt, imageNegativePrompt, apiKeysHook, setLatestResult, setPostGenAction, setIsPostGenProcessing, setPostGenResult]);
+  }, [activeImageUrl, hasApiKey, selectedImageProvider, selectedImageModel, imagePrompt, imageNegativePrompt, apiKeysHook, selectedProviderData, generationResultIds, selectedResultIndex, setLatestResult, setGenerationResults, setSelectedResultIndex, setPostGenAction, setIsPostGenProcessing, setPostGenResult]);
 
   // Cleanup post-gen polling on unmount
   useEffect(() => {
@@ -4664,8 +4696,9 @@ export function ImageStudio() {
                       variant="outline"
                       size="sm"
                       onClick={() => {
-                        if (currentJobId) handleFavorite(currentJobId);
-                        else toast.info('Added to favorites');
+                        const favoriteId = generationResultIds[selectedResultIndex] || generationResultIds[0];
+                        if (favoriteId) handleFavorite(favoriteId);
+                        else toast.error('This generation has not been saved yet');
                       }}
                       className="gap-1.5 border-border/60 bg-surface hover:bg-surface-hover"
                     >
