@@ -103,7 +103,8 @@ function dataUrlToBlob(value: string): Blob {
     throw new Error('Image exceeds the 20MB limit');
   }
 
-  return new Blob([bytes], { type: contentType });
+  const copy = Uint8Array.from(bytes);
+  return new Blob([copy.buffer], { type: contentType });
 }
 
 async function readResponseBlob(response: Response): Promise<Blob> {
