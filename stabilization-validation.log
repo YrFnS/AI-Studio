@@ -1,0 +1,7 @@
+=== Patch ===
+AI Studio stabilization patches applied successfully.
+=== Install ===
+bun install v1.3.4 (5eb2145b)
+error: lockfile had changes, but lockfile is frozen
+note: try re-running without --frozen-lockfile and commit the updated lockfile
+compile=0 patch=0 install=1 test=1 typecheck=1 lint=1 build=1
