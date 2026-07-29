@@ -5,6 +5,7 @@ import {
   getGenerationJob,
   type GenerationJobContext,
 } from '@/lib/server-generation-store';
+import { registerProtectedMedia } from '@/lib/server-media-store';
 
 interface LegacyStatusContext {
   provider?: string;
@@ -101,6 +102,10 @@ async function pollProvider(job: GenerationJobContext) {
       const statusData = await readProviderJson(statusResponse, 'Fal.ai');
 
       if (statusData.status === 'COMPLETED') {
+        if (statusData.error) {
+          return { status: 'failed', error: statusData.error };
+        }
+
         const resultResponse = await fetch(`${base}/response`, {
           headers: { Authorization: `Key ${apiKey}` },
           cache: 'no-store',
@@ -167,7 +172,7 @@ async function pollProvider(job: GenerationJobContext) {
         {
           headers: {
             Authorization: `Bearer ${apiKey}`,
-            'X-Runway-API-Version': '2024-11-06',
+            'X-Runway-Version': '2024-11-06',
           },
           cache: 'no-store',
         },
@@ -221,14 +226,21 @@ async function pollProvider(job: GenerationJobContext) {
           };
         }
 
-        const resultUrl =
+        const providerMediaUrl =
           data.response?.generateVideoResponse?.generatedSamples?.[0]?.video?.uri ||
           data.response?.generatedVideos?.[0]?.video?.uri ||
           null;
 
-        return resultUrl
-          ? { status: 'completed', resultUrl, urls: [resultUrl] }
-          : { status: 'failed', error: 'Google Veo completed without a media URL' };
+        if (!providerMediaUrl) {
+          return { status: 'failed', error: 'Google Veo completed without a media URL' };
+        }
+
+        const mediaToken = registerProtectedMedia({
+          url: providerMediaUrl,
+          headers: { 'x-goog-api-key': apiKey },
+        });
+        const resultUrl = `/api/generate/media/${mediaToken}`;
+        return { status: 'completed', resultUrl, urls: [resultUrl] };
       }
       return { status: 'processing' };
     }
