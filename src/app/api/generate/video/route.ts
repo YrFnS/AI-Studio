@@ -27,7 +27,11 @@ function normalizeDuration(value: unknown, fallback = 5): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-function runwayRatio(aspectRatio: string): string {
+function runwayRatio(aspectRatio: string, hasImage: boolean): string {
+  if (!hasImage) {
+    return aspectRatio === '9:16' ? '720:1280' : '1280:720';
+  }
+
   const ratios: Record<string, string> = {
     '16:9': '1280:720',
     '9:16': '720:1280',
@@ -51,7 +55,7 @@ async function generateRunwayVideo(
     model: params.model,
     promptText: params.prompt,
     duration: Math.min(10, Math.max(2, params.duration)),
-    ratio: runwayRatio(params.aspectRatio),
+    ratio: runwayRatio(params.aspectRatio, hasImage),
   };
   if (params.imageUrl) body.promptImage = params.imageUrl;
 
@@ -79,15 +83,32 @@ async function generateLumaVideo(
   params: VideoRequestParams,
   apiKey: string,
 ): Promise<AsyncVideoResult> {
+  if (params.imageUrl?.startsWith('data:') || params.endImageUrl?.startsWith('data:')) {
+    throw new Error('Luma image-to-video requires a public HTTPS image URL. Use URL input or another provider for a local upload.');
+  }
+
+  const maxDuration = params.model === 'ray-flash-2' ? 15 : 10;
   const body: Record<string, unknown> = {
+    generation_type: 'video',
     prompt: params.prompt,
     aspect_ratio: params.aspectRatio || '16:9',
     model: params.model,
+    resolution: '720p',
+    duration: `${Math.min(maxDuration, Math.max(5, params.duration))}s`,
   };
-  if (params.imageUrl) body.image_url = params.imageUrl;
+
+  if (params.imageUrl) {
+    const keyframes: Record<string, unknown> = {
+      frame0: { type: 'image', url: params.imageUrl },
+    };
+    if (params.endImageUrl) {
+      keyframes.frame1 = { type: 'image', url: params.endImageUrl };
+    }
+    body.keyframes = keyframes;
+  }
 
   const response = await fetch(
-    'https://api.lumalabs.ai/dream-machine/v1/generations',
+    'https://api.lumalabs.ai/dream-machine/v1/generations/video',
     {
       method: 'POST',
       headers: {
