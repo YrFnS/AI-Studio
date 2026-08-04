@@ -1,9 +1,8 @@
-import type { NextConfig } from "next";
+import type { NextConfig } from 'next';
 
 const nextConfig: NextConfig = {
-  output: "standalone",
-  /* config options here */
-  reactStrictMode: false,
+  output: 'standalone',
+  reactStrictMode: true,
 };
 
 export default nextConfig;

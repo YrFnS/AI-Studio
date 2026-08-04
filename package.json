@@ -4,12 +4,13 @@
   "private": true,
   "scripts": {
     "dev": "next dev -p 3000 2>&1 | tee dev.log",
-    "build": "next build && node -e \"const fs=require('fs');fs.mkdirSync('.next/standalone/.next',{recursive:true});fs.cpSync('.next/static','.next/standalone/.next/static',{recursive:true});fs.cpSync('public','.next/standalone/public',{recursive:true})\"",
-    "start": "NODE_ENV=production bun .next/standalone/server.js 2>&1 | tee server.log",
-    "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "check": "bun run test && bun run typecheck && bun run lint"
+    "lint": "eslint .",
+    "check": "bun run typecheck && bun run test && bun run lint",
+    "build:app": "next build && node -e \"const fs=require('fs');fs.mkdirSync('.next/standalone/.next',{recursive:true});fs.cpSync('.next/static','.next/standalone/.next/static',{recursive:true});fs.cpSync('public','.next/standalone/public',{recursive:true})\"",
+    "build": "bun run check && bun run build:app",
+    "start": "NODE_ENV=production bun .next/standalone/server.js 2>&1 | tee server.log"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
