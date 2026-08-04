@@ -1,128 +1,133 @@
 # AI Studio
 
-Multi-provider AI image and video generation studio built with Next.js. It includes image editing, prompt management, provider/model configuration, and a browser-local gallery.
+AI Studio is a local-first, multi-provider workspace for AI image and video generation. It runs as a Next.js application, stores user data in the browser, and lets each user connect providers with their own API keys through the Settings UI.
+
+## Architecture at a glance
+
+- **No external database** — there is no PostgreSQL, SQLite, Prisma, Supabase, or hosted database requirement.
+- **UI-managed provider keys** — users add and remove keys from the web interface; provider keys are not configured through `.env` files.
+- **Browser persistence** — keys, generations, prompts, collections, reference images, and custom models are stored in IndexedDB.
+- **Local provider proxy** — Next.js routes running on the same machine translate requests to each provider's API format.
+- **No persistent server-side credentials** — provider keys are not written to a server database or configuration file.
+- **Secure async polling** — long-running jobs use opaque local tokens instead of placing provider keys in status URLs.
 
 ## Features
 
-- **Image Generation** — Text-to-image, image-to-image, variations, upscaling, and style controls
-- **Video Generation** — Text-to-video and image-to-video across supported providers
-- **Cinema Studio** — Cinematic presets for cameras, lenses, lighting, film stocks, and color grading
-- **Gallery** — Search, favorite, organize, and delete generated media
-- **Collections** — Group generations into named browser-local collections
-- **Prompt Management** — Prompt history, templates, suggestions, and a smart prompt builder
-- **Model Comparison** — Run supported models side by side
-- **Multi-Provider Support** — Static provider catalogs plus dynamic model discovery where provider APIs support it
-- **BYOK API Keys** — Store provider credentials in the browser and use them through same-origin API routes
-- **Settings Export/Import** — Back up and restore browser-local configuration
-- **Keyboard Shortcuts** — Navigation and generation shortcuts throughout the studio
+- **Image Studio** — text-to-image, image-to-image, editing, inpainting, variations, upscaling, style controls, and advanced parameters
+- **Video Studio** — text-to-video and image-to-video through supported provider adapters
+- **Cinema Studio** — camera, lens, focal length, aperture, film stock, color grade, lighting, and scene presets
+- **Gallery** — search, favorites, timeline views, metadata, and collections
+- **Prompt tools** — history, templates, suggestions, quick starters, and a structured prompt builder
+- **Model comparison** — run supported image models side by side
+- **Custom and discovered models** — combine the built-in catalog with locally saved and dynamically discovered entries
+- **Generation queue** — monitor asynchronous work without blocking the studio
+- **Keyboard shortcuts** — fast navigation and generation controls
 
-## Tech Stack
+## Tech stack
 
-- **Framework:** Next.js 16 with the App Router and standalone output
-- **Language:** TypeScript
-- **UI:** React 19, Tailwind CSS 4, and shadcn/ui primitives
-- **State:** Zustand
-- **Storage:** IndexedDB for keys, generations, prompts, collections, and model metadata
-- **Animations:** Framer Motion
-- **Package Manager:** Bun
+- Next.js 16 with the App Router and standalone output
+- React 19 and TypeScript
+- Tailwind CSS 4 and shadcn/ui with Radix primitives
+- Zustand for application state
+- IndexedDB for local persistence
+- Framer Motion for interface animation
+- Bun for dependency management and scripts
 
-No server-side application database is required.
-
-## Prerequisites
+## Requirements
 
 - Bun 1.3 or newer
 - Node.js 18 or newer for supporting tooling
 
-## Installation
+## Run locally
 
 ```bash
 bun install
 bun run dev
 ```
 
-Open `http://localhost:3000`.
+Open `http://localhost:3000`, go to **Settings → API Keys**, and add a key for the provider you plan to use.
 
-There is no database migration or `DATABASE_URL` configuration step. Browser data is created automatically in IndexedDB when the application starts.
+No database setup, migration command, `DATABASE_URL`, or provider-key environment variable is required.
 
-## Provider Setup
-
-1. Open **Settings** in the application.
-2. Add an API key for each provider you plan to use.
-3. Test the key where provider validation is available.
-4. Select a supported provider and model in Image Studio, Video Studio, or Cinema Studio.
-
-API keys are stored in IndexedDB. When a generation is requested, the selected key is sent to this application's same-origin Next.js API route, which then calls the provider. Polling requests send keys in request headers rather than URL query strings.
-
-Do not deploy the application behind infrastructure that logs sensitive request headers or bodies without appropriate redaction.
-
-## Validation
+## Production build
 
 ```bash
 bun run typecheck
 bun run test
 bun run lint
-bun run check
-```
-
-`bun run build` runs the validation suite before producing the standalone Next.js build.
-
-## Production Build
-
-```bash
 bun run build
 bun run start
 ```
 
-The build copies static and public assets into `.next/standalone` so the standalone server can be deployed directly.
+To run all validation steps together:
 
-## Project Structure
-
-```text
-├── src/
-│   ├── app/
-│   │   ├── api/                    # Provider and generation API routes
-│   │   ├── layout.tsx              # Root layout
-│   │   ├── template.tsx            # Client runtime bridge
-│   │   └── page.tsx                # Main studio shell
-│   ├── components/
-│   │   ├── studio/                 # Image, video, cinema, gallery, and settings UI
-│   │   ├── ui/                     # shadcn/ui components
-│   │   └── generation-runtime-bridge.tsx
-│   ├── hooks/                      # Client hooks
-│   └── lib/
-│       ├── idb.ts                  # IndexedDB persistence
-│       ├── data.ts                 # Client data service
-│       ├── providers-data.ts       # Provider/model definitions
-│       ├── generation-job.ts       # Opaque async job metadata
-│       └── server/                 # Server-only input validation helpers
-├── public/
-├── bun.lock
-├── next.config.ts
-└── package.json
+```bash
+bun run check
 ```
 
-## Data Architecture
+## Data and credential flow
 
-The following data is stored locally in the current browser profile:
+### Stored in IndexedDB
 
-- Provider API keys
-- Generation records and result URLs/data
+- Provider API keys and optional labels
+- Generation history and result metadata
 - Prompt history and saved prompts
-- Collections and collection memberships
-- Uploaded reference images and thumbnails
-- Custom models and discovered-model cache entries
+- Collections and collection membership
+- Reference images and thumbnails
+- Custom models and cached model discovery results
 
-Generated media hosted by third-party providers can expire. The gallery stores the returned URL or data URL; it does not automatically copy every remote provider asset into durable object storage.
+Clearing this site's browser storage removes this locally persisted data.
 
-Clearing browser site data removes the local AI Studio workspace.
+### Sent during generation
 
-## Security Notes
+When a user starts a generation, the browser reads the selected provider key from IndexedDB and sends it to the local Next.js route. That local route calls the chosen provider. The key is used for that request but is not persisted in a server-side database.
 
-- Async provider jobs use an opaque application job token containing the provider, model, and provider job ID.
-- Polling accepts API keys through a request header and disables caching.
-- Server-side image ingestion permits bounded HTTPS image responses and blocks local, private, and reserved network addresses.
-- Unsupported provider/action combinations fail explicitly instead of falling back to another provider API.
+For asynchronous providers, AI Studio temporarily retains the provider job context in local process memory and returns an opaque local job token to the browser. Status polling uses that token, so credentials are not placed in query strings, browser history, or proxy access logs. Restarting the local process clears temporary job and protected-media tokens.
 
-## License
+## Provider support
 
-No license file is currently published. All rights are reserved unless the repository owner adds an explicit license.
+The provider endpoint exposes only model/provider combinations that have a matching executable adapter. The catalog can still contain additional definitions for future work, but unsupported combinations are hidden from generation selectors.
+
+The verified video catalog currently includes:
+
+- Replicate — Seedance 2.0
+- fal — Seedance 2.0 and Seedance 2.0 Fast
+- Runway — Gen-4.5 and Gen-4 Turbo
+- Luma — Ray 2 and Ray 2 Flash
+- Google AI Studio — Veo 3.1 and Veo 3.1 Fast
+
+Image support includes the providers implemented in `src/app/api/generate/handlers.ts` and filtered by `src/lib/provider-capabilities.ts`.
+
+## Project structure
+
+```text
+src/
+├── app/
+│   ├── api/
+│   │   ├── generate/             # Provider submission, polling, and media proxy routes
+│   │   ├── keys/                 # Provider-key connection tests
+│   │   ├── models/               # Model catalog and discovery endpoints
+│   │   ├── prompt-suggestions/   # Prompt assistance
+│   │   ├── prompt-templates/     # Curated templates
+│   │   └── providers/            # Executable provider/model listing
+│   ├── globals.css
+│   ├── layout.tsx
+│   └── page.tsx
+├── components/
+│   ├── studio/                   # Image, video, cinema, gallery, and settings workspaces
+│   ├── ui/                       # Shared shadcn/Radix components
+│   └── secure-provider-fetch-bridge.tsx
+├── hooks/
+└── lib/
+    ├── idb.ts                    # Browser persistence
+    ├── provider-capabilities.ts  # Executable adapter matrix
+    ├── providers-data.ts         # Static provider and model definitions
+    ├── server-generation-store.ts
+    └── server-media-store.ts
+```
+
+## Reference sources and notices
+
+The project was informed by several public prompt collections and creative-studio projects. See [SOURCES.md](SOURCES.md) for the reference history and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for their licenses and attribution notes.
+
+The repository's own project license should be declared separately by the repository owner; third-party licenses do not automatically license AI Studio itself.

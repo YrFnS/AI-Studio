@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - 'agent/**'
   pull_request:
 
 permissions:
@@ -15,6 +16,7 @@ concurrency:
 
 jobs:
   validate:
+    name: Typecheck, test, lint, and build
     runs-on: ubuntu-latest
     timeout-minutes: 25
 

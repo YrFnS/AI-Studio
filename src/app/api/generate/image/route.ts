@@ -1,36 +1,69 @@
 import { NextRequest, NextResponse } from 'next/server';
+
 import type { GenerateParams } from '@/lib/types';
 import { PROVIDERS } from '@/lib/providers-data';
-import { encodeGenerationJobToken } from '@/lib/generation-job';
+import { supportsGeneration } from '@/lib/provider-capabilities';
+import { registerGenerationJob } from '@/lib/server-generation-store';
 import {
-  generateOpenAI, generateStability, generateReplicate, generateFal,
-  generateTogether, generateFireworks, generateIdeogram, generateHuggingFace,
-  generateAIMLAPI, generateGoogle, generateLeonardo, generateRecraft, generateBFL,
+  generateOpenAI,
+  generateStability,
+  generateReplicate,
+  generateFal,
+  generateTogether,
+  generateFireworks,
+  generateIdeogram,
+  generateHuggingFace,
+  generateAIMLAPI,
+  generateGoogle,
+  generateLeonardo,
+  generateRecraft,
+  generateBFL,
 } from '../handlers';
 
-export const runtime = 'nodejs';
-
-async function getProviderById(id: string) {
+function getProviderById(id: string) {
   return PROVIDERS.find((provider) => provider.id === id);
-}
-
-function json(payload: Record<string, unknown>, status = 200) {
-  return NextResponse.json(payload, {
-    status,
-    headers: { 'Cache-Control': 'no-store' },
-  });
 }
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const {
-      providerId, modelId, prompt, negativePrompt, aspectRatio, quality, steps,
-      guidance, seed, batchSize, inputImageUrl, style, width, height, size,
-      output_format, strength, sampler, magicPrompt, styleType, renderingSpeed,
-      clipGuidance, tileable, photoReal, alchemy, safetyFilter, scheduler,
-      clipSkip, lighting, colorMood, cameraShot, hiresFix, hiresScale,
-      hiresSteps, hiresDenoise, apiKey,
+      providerId,
+      modelId,
+      prompt,
+      negativePrompt,
+      aspectRatio,
+      quality,
+      steps,
+      guidance,
+      seed,
+      batchSize,
+      inputImageUrl,
+      style,
+      width,
+      height,
+      size,
+      output_format,
+      strength,
+      sampler,
+      magicPrompt,
+      styleType,
+      renderingSpeed,
+      clipGuidance,
+      tileable,
+      photoReal,
+      alchemy,
+      safetyFilter,
+      scheduler,
+      clipSkip,
+      lighting,
+      colorMood,
+      cameraShot,
+      hiresFix,
+      hiresScale,
+      hiresSteps,
+      hiresDenoise,
+      apiKey,
     } = body as GenerateParams & {
       providerId: string;
       modelId: string;
@@ -38,14 +71,28 @@ export async function POST(req: NextRequest) {
     };
 
     if (!providerId || !modelId || !prompt) {
-      return json({ error: 'providerId, modelId, and prompt are required' }, 400);
+      return NextResponse.json(
+        { error: 'providerId, modelId, and prompt are required' },
+        { status: 400 },
+      );
     }
     if (!apiKey) {
-      return json({ error: 'API key is required. Please configure your API key in Settings.' }, 400);
+      return NextResponse.json(
+        { error: 'API key is required. Please configure your API key in Settings.' },
+        { status: 400 },
+      );
     }
 
-    const provider = await getProviderById(providerId);
-    if (!provider) return json({ error: 'Provider not found' }, 404);
+    const provider = getProviderById(providerId);
+    if (!provider) {
+      return NextResponse.json({ error: 'Provider not found' }, { status: 404 });
+    }
+    if (!supportsGeneration(provider.name, 'image')) {
+      return NextResponse.json(
+        { error: `Image generation is not supported for ${provider.displayName}` },
+        { status: 400 },
+      );
+    }
 
     const params: GenerateParams = {
       prompt,
@@ -86,48 +133,77 @@ export async function POST(req: NextRequest) {
     };
 
     let result: string[] | { jobId: string; status: string };
+
     switch (provider.name) {
-      case 'openai': result = await generateOpenAI(params, apiKey, provider.baseUrl); break;
-      case 'stability': result = await generateStability(params, apiKey, provider.baseUrl); break;
-      case 'replicate': result = await generateReplicate(params, apiKey, provider.baseUrl); break;
-      case 'fal': result = await generateFal(params, apiKey, provider.baseUrl); break;
-      case 'together': result = await generateTogether(params, apiKey, provider.baseUrl); break;
-      case 'fireworks': result = await generateFireworks(params, apiKey, provider.baseUrl); break;
-      case 'ideogram': result = await generateIdeogram(params, apiKey, provider.baseUrl); break;
-      case 'huggingface': result = await generateHuggingFace(params, apiKey, provider.baseUrl); break;
-      case 'aimlapi': result = await generateAIMLAPI(params, apiKey, provider.baseUrl); break;
-      case 'bfl': result = await generateBFL(params, apiKey, provider.baseUrl); break;
-      case 'google':
-      case 'google-aistudio': result = await generateGoogle(params, apiKey, provider.baseUrl); break;
-      case 'leonardo': result = await generateLeonardo(params, apiKey, provider.baseUrl); break;
-      case 'recraft': result = await generateRecraft(params, apiKey, provider.baseUrl); break;
-      case 'google-vertex':
-        throw new Error('Google Vertex image generation requires project, location, and OAuth configuration and is not supported by the BYOK API-key flow yet.');
+      case 'openai':
+        result = await generateOpenAI(params, apiKey, provider.baseUrl);
+        break;
+      case 'stability':
+        result = await generateStability(params, apiKey, provider.baseUrl);
+        break;
+      case 'replicate':
+        result = await generateReplicate(params, apiKey, provider.baseUrl);
+        break;
+      case 'fal':
+        result = await generateFal(params, apiKey, provider.baseUrl);
+        break;
+      case 'together':
+        result = await generateTogether(params, apiKey, provider.baseUrl);
+        break;
+      case 'fireworks':
+        result = await generateFireworks(params, apiKey, provider.baseUrl);
+        break;
+      case 'ideogram':
+        result = await generateIdeogram(params, apiKey, provider.baseUrl);
+        break;
+      case 'huggingface':
+        result = await generateHuggingFace(params, apiKey, provider.baseUrl);
+        break;
+      case 'aimlapi':
+        result = await generateAIMLAPI(params, apiKey, provider.baseUrl);
+        break;
+      case 'bfl':
+        result = await generateBFL(params, apiKey, provider.baseUrl);
+        break;
+      case 'google-aistudio':
+        result = await generateGoogle(params, apiKey, provider.baseUrl);
+        break;
+      case 'leonardo':
+        result = await generateLeonardo(params, apiKey, provider.baseUrl);
+        break;
+      case 'recraft':
+        result = await generateRecraft(params, apiKey, provider.baseUrl);
+        break;
       default:
-        throw new Error(`Image generation is not supported for provider: ${provider.displayName}`);
+        return NextResponse.json(
+          { error: `No image adapter is configured for ${provider.displayName}` },
+          { status: 400 },
+        );
     }
 
-    if (!Array.isArray(result) && typeof result === 'object' && 'jobId' in result) {
-      const jobToken = encodeGenerationJobToken({
-        providerId: provider.id,
+    if (!Array.isArray(result) && 'jobId' in result) {
+      const localJobId = registerGenerationJob({
+        provider: provider.name,
+        providerJobId: result.jobId,
         modelId,
-        jobId: result.jobId,
-        kind: 'image',
+        apiKey,
       });
 
-      return json({
-        id: jobToken,
-        jobId: jobToken,
+      return NextResponse.json({
+        id: localJobId,
+        jobId: localJobId,
+        localJob: true,
         status: 'processing',
         message: 'Generation in progress. Poll /api/generate/status for results.',
       });
     }
 
-    return json({ status: 'completed', urls: result as string[] });
+    return NextResponse.json({ status: 'completed', urls: result });
   } catch (error) {
     console.error('Generate image error:', error);
-    return json({
-      error: error instanceof Error ? error.message : 'Failed to generate image',
-    }, 500);
+    return NextResponse.json(
+      { error: error instanceof Error ? error.message : 'Failed to generate image' },
+      { status: 500 },
+    );
   }
 }

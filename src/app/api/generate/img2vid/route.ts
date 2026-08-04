@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { PROVIDERS } from '@/lib/providers-data';
-import { encodeGenerationJobToken } from '@/lib/generation-job';
+import { registerGenerationJob } from '@/lib/server-generation-store';
 
 export const runtime = 'nodejs';
 
@@ -162,16 +162,17 @@ export async function POST(req: NextRequest) {
         throw new Error(`Image-to-video is not supported for provider: ${provider.displayName}`);
     }
 
-    const jobToken = encodeGenerationJobToken({
-      providerId: provider.id,
+    const localJobId = registerGenerationJob({
+      provider: provider.name,
+      providerJobId: result.jobId,
       modelId: effectiveModelId,
-      jobId: result.jobId,
-      kind: 'video',
+      apiKey,
     });
 
     return json({
-      id: jobToken,
-      jobId: jobToken,
+      id: localJobId,
+      jobId: localJobId,
+      localJob: true,
       status: 'processing',
       message: 'Image-to-video generation in progress. Poll /api/generate/status for results.',
     });

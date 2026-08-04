@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { PROVIDERS } from '@/lib/providers-data';
-import { encodeGenerationJobToken } from '@/lib/generation-job';
+import { registerGenerationJob } from '@/lib/server-generation-store';
 import { resolveImageBlob } from '@/lib/server/image-input';
 
 export const runtime = 'nodejs';
@@ -232,15 +232,16 @@ export async function POST(req: NextRequest) {
     }
 
     if (result.status === 'processing') {
-      const jobToken = encodeGenerationJobToken({
-        providerId: provider.id,
+      const localJobId = registerGenerationJob({
+        provider: provider.name,
+        providerJobId: result.jobId,
         modelId: effectiveModelId,
-        jobId: result.jobId,
-        kind: 'image',
+        apiKey,
       });
       return json({
-        id: jobToken,
-        jobId: jobToken,
+        id: localJobId,
+        jobId: localJobId,
+        localJob: true,
         status: 'processing',
         message: 'Upscale in progress. Poll /api/generate/status for results.',
       });
