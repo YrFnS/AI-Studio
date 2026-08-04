@@ -427,7 +427,7 @@ export const useAppStore = create<AppState>()(
   galleryGridSize: 'md',
   setGalleryGridSize: (size) => set({ galleryGridSize: size }),
   gallerySelectMode: false,
-  setGallerySelectMode: (enabled) => set({ gallerySelectMode: enabled, gallerySelectedIds: !enabled ? [] : undefined as unknown as string[] }),
+  setGallerySelectMode: (enabled) => set({ gallerySelectMode: enabled, gallerySelectedIds: [] }),
   gallerySelectedIds: [],
   setGallerySelectedIds: (ids) => set({ gallerySelectedIds: ids }),
   

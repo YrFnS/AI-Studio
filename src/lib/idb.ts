@@ -288,6 +288,13 @@ export async function deleteGeneration(id: string): Promise<void> {
   await txComplete(transaction);
 }
 
+export async function clearAllGenerations(): Promise<void> {
+  const { transaction, stores } = await tx(['generations', 'collectionItems'], 'readwrite');
+  stores['generations'].clear();
+  stores['collectionItems'].clear();
+  await txComplete(transaction);
+}
+
 export async function getGenerations(options?: {
   filter?: 'all' | 'image' | 'video' | 'favorite';
   collectionId?: string;
