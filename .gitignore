@@ -68,3 +68,4 @@ tmp/
 .agent-ctx/
 .crew/
 ${APPDATA}/npm/
+.env*
