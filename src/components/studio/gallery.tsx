@@ -421,8 +421,7 @@ export function Gallery() {
     async (id: string) => {
       setDeletingId(id);
       try {
-        const res = await fetch(`/api/gallery?id=${id}`, { method: 'DELETE' });
-        if (!res.ok) throw new Error('Failed to delete');
+        await idb.deleteGeneration(id);
         toast.success('Generation deleted');
         setGenerations((prev) => prev.filter((g) => g.id !== id));
         setTotal((prev) => prev - 1);
@@ -441,18 +440,17 @@ export function Gallery() {
   // Clear all --------------------------------------------------------------
   const handleClearAll = useCallback(async () => {
     try {
-      const deletePromises = generations.map((g) =>
-        fetch(`/api/gallery?id=${g.id}`, { method: 'DELETE' })
-      );
-      await Promise.all(deletePromises);
+      await idb.clearAllGenerations();
       toast.success('All generations cleared');
       setGenerations([]);
       setTotal(0);
       setHasMore(false);
+      setGallerySelectedIds([]);
+      setGallerySelectMode(false);
     } catch {
       toast.error('Failed to clear all generations');
     }
-  }, [generations]);
+  }, [setGallerySelectedIds, setGallerySelectMode]);
 
   // Download ---------------------------------------------------------------
   const handleDownload = useCallback(async (url: string, type: string) => {

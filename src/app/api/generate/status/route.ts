@@ -1,83 +1,303 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-// Poll for generation status (for async providers like Replicate, Fal.ai, BFL, Leonardo, Runway, Luma)
-// The client sends the provider name and job ID to poll
-export async function GET(req: NextRequest) {
-  try {
-    const { searchParams } = new URL(req.url);
-    const jobId = searchParams.get('id');
-    const apiKey = searchParams.get('apiKey');
-    const providerName = searchParams.get('provider');
-    const modelId = searchParams.get('modelId');
+import {
+  deleteGenerationJob,
+  getGenerationJob,
+  type GenerationJobContext,
+} from '@/lib/server-generation-store';
+import { registerProtectedMedia } from '@/lib/server-media-store';
 
-    if (!jobId) return NextResponse.json({ error: 'id is required' }, { status: 400 });
-    if (!apiKey) return NextResponse.json({ error: 'apiKey is required' }, { status: 400 });
-    if (!providerName) return NextResponse.json({ error: 'provider is required' }, { status: 400 });
+interface LegacyStatusContext {
+  provider?: string;
+  modelId?: string;
+  apiKey?: string;
+}
 
-    let resultUrl: string | null = null;
+class PermanentStatusError extends Error {}
 
-    switch (providerName) {
-      case 'replicate': {
-        const res = await fetch(`https://api.replicate.com/v1/predictions/${jobId}`, { headers: { 'Authorization': `Bearer ${apiKey}` } });
-        const data = await res.json();
-        if (data.status === 'succeeded') resultUrl = Array.isArray(data.output) ? data.output[0] : data.output;
-        else if (data.status === 'failed') return NextResponse.json({ status: 'failed', error: data.error });
-        break;
-      }
-      case 'fal': {
-        const res = await fetch(`https://queue.fal.run/${modelId || ''}/requests/${jobId}`, { headers: { 'Authorization': `Key ${apiKey}` } });
-        const data = await res.json();
-        if (data.status === 'COMPLETED') resultUrl = data.images?.[0]?.url || data.video?.url || data.output?.url;
-        else if (data.status === 'FAILED') return NextResponse.json({ status: 'failed', error: data.error });
-        break;
-      }
-      case 'bfl': {
-        const res = await fetch(`https://api.bfl.ml/v1/get_result?id=${jobId}`, { headers: { 'X-Key': apiKey } });
-        const data = await res.json();
-        if (data.status === 'Ready') resultUrl = data.result?.sample;
-        else if (data.status === 'Failed') return NextResponse.json({ status: 'failed', error: data.error });
-        break;
-      }
-      case 'leonardo': {
-        const res = await fetch(`https://cloud.leonardo.ai/api/rest/v1/generations/${jobId}`, { headers: { 'Authorization': `Bearer ${apiKey}` } });
-        const data = await res.json();
-        const genData = data.generations_by_pk;
-        if (genData?.status === 'COMPLETE') resultUrl = genData.generated_images?.[0]?.url || null;
-        else if (genData?.status === 'FAILED') return NextResponse.json({ status: 'failed', error: genData?.failure_reason || 'Leonardo generation failed' });
-        break;
-      }
-      case 'runway': {
-        const res = await fetch(`https://api.dev.runwayml.com/v1/tasks/${jobId}`, { headers: { 'Authorization': `Bearer ${apiKey}`, 'X-Runway-API-Version': '2024-11-06' } });
-        const data = await res.json();
-        if (data.status === 'SUCCEEDED') resultUrl = Array.isArray(data.output) ? data.output[0] : data.output;
-        else if (data.status === 'FAILED') return NextResponse.json({ status: 'failed', error: data.error || data.failure || 'Runway generation failed' });
-        break;
-      }
-      case 'luma': {
-        const res = await fetch(`https://api.lumalabs.ai/dream-machine/v1/generations/${jobId}`, { headers: { 'Authorization': `Bearer ${apiKey}` } });
-        const data = await res.json();
-        if (data.state === 'completed') resultUrl = data.assets?.video || null;
-        else if (data.state === 'failed') return NextResponse.json({ status: 'failed', error: data.failure_reason || 'Luma generation failed' });
-        break;
-      }
-      case 'google': {
-        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/${jobId}?key=${apiKey}`);
-        const data = await res.json();
-        if (data.done) {
-          if (data.error) return NextResponse.json({ status: 'failed', error: data.error.message || 'Google Veo generation failed' });
-          resultUrl = data.response?.generateVideoResponse?.generatedSamples?.[0]?.video?.uri || data.response?.video?.uri || data.response?.videos?.[0]?.signedUri || null;
-          if (!resultUrl) { const videoBytes = data.response?.generateVideoResponse?.generatedSamples?.[0]?.video?.bytesBase64Encoded; if (videoBytes) resultUrl = `data:video/mp4;base64,${videoBytes}`; }
+function jsonResponse(body: Record<string, unknown>, status = 200) {
+  return NextResponse.json(body, {
+    status,
+    headers: { 'Cache-Control': 'no-store' },
+  });
+}
+
+async function readProviderJson(response: Response, providerLabel: string) {
+  if (!response.ok) {
+    const message = `${providerLabel} status check failed (${response.status})`;
+    if (response.status >= 400 && response.status < 500) {
+      throw new PermanentStatusError(message);
+    }
+    throw new Error(message);
+  }
+
+  return response.json();
+}
+
+function extractReplicateUrl(output: unknown): string | null {
+  if (typeof output === 'string') return output;
+  if (Array.isArray(output)) {
+    const first = output.find((item) => typeof item === 'string');
+    if (typeof first === 'string') return first;
+    return extractReplicateUrl(output[0]);
+  }
+  if (output && typeof output === 'object') {
+    const record = output as Record<string, unknown>;
+    if (typeof record.url === 'string') return record.url;
+    if (typeof record.uri === 'string') return record.uri;
+    if (record.video) return extractReplicateUrl(record.video);
+    if (record.image) return extractReplicateUrl(record.image);
+  }
+  return null;
+}
+
+function extractFalUrl(data: Record<string, unknown>): string | null {
+  const video = data.video as Record<string, unknown> | undefined;
+  if (typeof video?.url === 'string') return video.url;
+
+  const images = data.images as Array<Record<string, unknown>> | undefined;
+  if (typeof images?.[0]?.url === 'string') return images[0].url as string;
+
+  const image = data.image as Record<string, unknown> | undefined;
+  if (typeof image?.url === 'string') return image.url;
+
+  const output = data.output as Record<string, unknown> | string | undefined;
+  return extractReplicateUrl(output) || (typeof data.url === 'string' ? data.url : null);
+}
+
+async function pollProvider(job: GenerationJobContext) {
+  const { provider, providerJobId, modelId, apiKey } = job;
+
+  switch (provider) {
+    case 'replicate': {
+      const response = await fetch(
+        `https://api.replicate.com/v1/predictions/${encodeURIComponent(providerJobId)}`,
+        { headers: { Authorization: `Bearer ${apiKey}` }, cache: 'no-store' },
+      );
+      const data = await readProviderJson(response, 'Replicate');
+
+      if (data.status === 'succeeded') {
+        const resultUrl = extractReplicateUrl(data.output);
+        if (!resultUrl) {
+          return { status: 'failed', error: 'Replicate completed without a media URL' };
         }
-        break;
+        return { status: 'completed', resultUrl, urls: [resultUrl] };
       }
-      default:
-        break;
+      if (data.status === 'failed' || data.status === 'canceled') {
+        return { status: 'failed', error: data.error || `Replicate job ${data.status}` };
+      }
+      return { status: 'processing' };
     }
 
-    if (resultUrl) return NextResponse.json({ status: 'completed', resultUrl });
-    return NextResponse.json({ status: 'processing' });
-  } catch (error) {
-    console.error('Status check error:', error);
-    return NextResponse.json({ error: 'Failed to check status' }, { status: 500 });
+    case 'fal': {
+      if (!modelId) {
+        return { status: 'failed', error: 'Fal model id is missing from the job' };
+      }
+
+      const base = `https://queue.fal.run/${modelId}/requests/${encodeURIComponent(providerJobId)}`;
+      const statusResponse = await fetch(`${base}/status`, {
+        headers: { Authorization: `Key ${apiKey}` },
+        cache: 'no-store',
+      });
+      const statusData = await readProviderJson(statusResponse, 'Fal.ai');
+
+      if (statusData.status === 'COMPLETED') {
+        if (statusData.error) {
+          return { status: 'failed', error: statusData.error };
+        }
+
+        const resultResponse = await fetch(`${base}/response`, {
+          headers: { Authorization: `Key ${apiKey}` },
+          cache: 'no-store',
+        });
+        const resultData = (await readProviderJson(
+          resultResponse,
+          'Fal.ai result',
+        )) as Record<string, unknown>;
+        const resultUrl = extractFalUrl(resultData);
+        if (!resultUrl) {
+          return { status: 'failed', error: 'Fal.ai completed without a media URL' };
+        }
+        return { status: 'completed', resultUrl, urls: [resultUrl] };
+      }
+      if (statusData.status === 'FAILED') {
+        return { status: 'failed', error: statusData.error || 'Fal.ai generation failed' };
+      }
+      return { status: 'processing' };
+    }
+
+    case 'bfl': {
+      const response = await fetch(
+        `https://api.bfl.ml/v1/get_result?id=${encodeURIComponent(providerJobId)}`,
+        { headers: { 'X-Key': apiKey }, cache: 'no-store' },
+      );
+      const data = await readProviderJson(response, 'Black Forest Labs');
+      if (data.status === 'Ready') {
+        const resultUrl = data.result?.sample;
+        return resultUrl
+          ? { status: 'completed', resultUrl, urls: [resultUrl] }
+          : { status: 'failed', error: 'BFL completed without a media URL' };
+      }
+      if (data.status === 'Failed') {
+        return { status: 'failed', error: data.error || 'BFL generation failed' };
+      }
+      return { status: 'processing' };
+    }
+
+    case 'leonardo': {
+      const response = await fetch(
+        `https://cloud.leonardo.ai/api/rest/v1/generations/${encodeURIComponent(providerJobId)}`,
+        { headers: { Authorization: `Bearer ${apiKey}` }, cache: 'no-store' },
+      );
+      const data = await readProviderJson(response, 'Leonardo');
+      const generation = data.generations_by_pk;
+      if (generation?.status === 'COMPLETE') {
+        const resultUrl = generation.generated_images?.[0]?.url;
+        return resultUrl
+          ? { status: 'completed', resultUrl, urls: [resultUrl] }
+          : { status: 'failed', error: 'Leonardo completed without a media URL' };
+      }
+      if (generation?.status === 'FAILED') {
+        return {
+          status: 'failed',
+          error: generation.failure_reason || 'Leonardo generation failed',
+        };
+      }
+      return { status: 'processing' };
+    }
+
+    case 'runway': {
+      const response = await fetch(
+        `https://api.dev.runwayml.com/v1/tasks/${encodeURIComponent(providerJobId)}`,
+        {
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            'X-Runway-Version': '2024-11-06',
+          },
+          cache: 'no-store',
+        },
+      );
+      const data = await readProviderJson(response, 'Runway');
+      if (data.status === 'SUCCEEDED') {
+        const resultUrl = extractReplicateUrl(data.output);
+        return resultUrl
+          ? { status: 'completed', resultUrl, urls: [resultUrl] }
+          : { status: 'failed', error: 'Runway completed without a media URL' };
+      }
+      if (data.status === 'FAILED' || data.status === 'CANCELED') {
+        return { status: 'failed', error: data.error || data.failure || 'Runway generation failed' };
+      }
+      return { status: 'processing' };
+    }
+
+    case 'luma': {
+      const response = await fetch(
+        `https://api.lumalabs.ai/dream-machine/v1/generations/${encodeURIComponent(providerJobId)}`,
+        { headers: { Authorization: `Bearer ${apiKey}` }, cache: 'no-store' },
+      );
+      const data = await readProviderJson(response, 'Luma');
+      if (data.state === 'completed') {
+        const resultUrl = data.assets?.video;
+        return resultUrl
+          ? { status: 'completed', resultUrl, urls: [resultUrl] }
+          : { status: 'failed', error: 'Luma completed without a media URL' };
+      }
+      if (data.state === 'failed') {
+        return { status: 'failed', error: data.failure_reason || 'Luma generation failed' };
+      }
+      return { status: 'processing' };
+    }
+
+    case 'google':
+    case 'google-aistudio': {
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/${providerJobId}`,
+        {
+          headers: { 'x-goog-api-key': apiKey },
+          cache: 'no-store',
+        },
+      );
+      const data = await readProviderJson(response, 'Google Veo');
+      if (data.done) {
+        if (data.error) {
+          return {
+            status: 'failed',
+            error: data.error.message || 'Google Veo generation failed',
+          };
+        }
+
+        const providerMediaUrl =
+          data.response?.generateVideoResponse?.generatedSamples?.[0]?.video?.uri ||
+          data.response?.generatedVideos?.[0]?.video?.uri ||
+          null;
+
+        if (!providerMediaUrl) {
+          return { status: 'failed', error: 'Google Veo completed without a media URL' };
+        }
+
+        const mediaToken = registerProtectedMedia({
+          url: providerMediaUrl,
+          headers: { 'x-goog-api-key': apiKey },
+        });
+        const resultUrl = `/api/generate/media/${mediaToken}`;
+        return { status: 'completed', resultUrl, urls: [resultUrl] };
+      }
+      return { status: 'processing' };
+    }
+
+    default:
+      return { status: 'failed', error: `Status polling is not supported for ${provider}` };
   }
+}
+
+export async function POST(req: NextRequest) {
+  let localToken: string | null = null;
+
+  try {
+    const body = (await req.json()) as { id?: string } & LegacyStatusContext;
+    if (!body.id) return jsonResponse({ error: 'id is required' }, 400);
+
+    localToken = body.id;
+    const storedJob = getGenerationJob(body.id);
+    const job: GenerationJobContext | null = storedJob ?? (
+      body.provider && body.apiKey
+        ? {
+            provider: body.provider,
+            providerJobId: body.id,
+            modelId: body.modelId,
+            apiKey: body.apiKey,
+            createdAt: Date.now(),
+          }
+        : null
+    );
+
+    if (!job) {
+      return jsonResponse(
+        { status: 'failed', error: 'Generation job context is unavailable. Start the generation again.' },
+        404,
+      );
+    }
+
+    const result = await pollProvider(job);
+    if (storedJob && (result.status === 'completed' || result.status === 'failed')) {
+      deleteGenerationJob(body.id);
+    }
+
+    return jsonResponse(result);
+  } catch (error) {
+    if (localToken && error instanceof PermanentStatusError) {
+      deleteGenerationJob(localToken);
+      return jsonResponse({ status: 'failed', error: error.message });
+    }
+
+    console.error('Status check error:', error);
+    return jsonResponse({ error: 'Failed to check generation status' }, 502);
+  }
+}
+
+export async function GET() {
+  return jsonResponse(
+    { error: 'Status checks must use POST so credentials are never placed in the URL.' },
+    405,
+  );
 }

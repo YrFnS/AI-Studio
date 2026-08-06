@@ -27,6 +27,7 @@ import {
 
 import { useAppStore } from '@/lib/store';
 import * as data from '@/lib/data';
+import { beginGeneration, completeGeneration, failGeneration, markGenerationProcessing, type GenerationDescriptor } from '@/lib/generation-persistence';
 import type { GenerationQueueItem } from '@/lib/store';
 import { useApiKeys } from '@/hooks/use-api-keys';
 import { Button } from '@/components/ui/button';
@@ -901,6 +902,8 @@ export function CinemaStudio() {
   const [showNegPrompt, setShowNegPrompt] = useState(false);
 
   const [currentJobId, setCurrentJobId] = useState<string | null>(null);
+  const [latestGenerationId, setLatestGenerationId] = useState<string | null>(null);
+  const generationRef = useRef<GenerationDescriptor | null>(null);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [showGenInfo, setShowGenInfo] = useState(true);
   const [genStartTime, setGenStartTime] = useState<number | null>(null);
@@ -989,46 +992,57 @@ export function CinemaStudio() {
 
 
 
-  // Polling logic
+  // Polling logic — API keys stay in the POST body, never in the URL.
   const startPolling = useCallback(
-    (generationId: string) => {
+    (providerJobId: string) => {
       if (pollRef.current) clearInterval(pollRef.current);
 
       pollRef.current = setInterval(async () => {
         try {
           const apiKey = await apiKeysHook.getKeyForProvider(selectedProvider);
-          const res = await fetch(`/api/generate/status?id=${generationId}${apiKey ? `&apiKey=${encodeURIComponent(apiKey)}` : ''}`);
-          if (!res.ok) throw new Error('Status check failed');
-          const data = await res.json();
+          if (!apiKey) throw new Error('API key is no longer available');
+          const res = await fetch('/api/generate/status', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id: providerJobId, apiKey, provider: selectedProvider, modelId: selectedModel }),
+          });
+          const statusData = await res.json();
+          if (!res.ok) throw new Error(statusData.error || 'Status check failed');
 
-          if (data.status === 'completed') {
-            setIsCinemaGenerating(false);
-            setLatestResult(data.resultUrl || data.urls?.[0] || null);
-            setCurrentJobId(null);
-            if (queueIdRef.current) {
-              updateQueueItem(queueIdRef.current, { status: 'completed', resultUrl: data.resultUrl || data.urls?.[0] || undefined });
-              queueIdRef.current = null;
+          if (statusData.status === 'completed') {
+            const urls = statusData.urls || (statusData.resultUrl ? [statusData.resultUrl] : []);
+            const descriptor = generationRef.current;
+            if (descriptor) {
+              const ids = await completeGeneration(descriptor, urls, providerJobId);
+              setLatestGenerationId(ids[0] || null);
             }
+            setIsCinemaGenerating(false);
+            setLatestResult(urls[0] || null);
+            setCurrentJobId(null);
+            if (queueIdRef.current) updateQueueItem(queueIdRef.current, { status: 'completed', resultUrl: urls[0] || undefined });
+            queueIdRef.current = null;
+            generationRef.current = null;
             if (pollRef.current) clearInterval(pollRef.current);
             pollRef.current = null;
             toast.success('Cinematic image generated successfully!');
-          } else if (data.status === 'failed') {
+          } else if (statusData.status === 'failed') {
+            const descriptor = generationRef.current;
+            if (descriptor) await failGeneration(descriptor, statusData.error || 'Generation failed', providerJobId);
             setIsCinemaGenerating(false);
             setCurrentJobId(null);
-            if (queueIdRef.current) {
-              updateQueueItem(queueIdRef.current, { status: 'failed' });
-              queueIdRef.current = null;
-            }
+            if (queueIdRef.current) updateQueueItem(queueIdRef.current, { status: 'failed' });
+            queueIdRef.current = null;
+            generationRef.current = null;
             if (pollRef.current) clearInterval(pollRef.current);
             pollRef.current = null;
-            toast.error(data.error || 'Generation failed');
+            toast.error(statusData.error || 'Generation failed');
           }
-        } catch {
-          // retry next interval
+        } catch (error) {
+          console.error('Cinema status polling failed', error);
         }
       }, 3000);
     },
-    [setIsCinemaGenerating, setLatestResult, updateQueueItem, apiKeysHook, selectedProvider],
+    [setIsCinemaGenerating, setLatestResult, updateQueueItem, apiKeysHook, selectedProvider, selectedModel]
   );
 
   // Cleanup polling on unmount
@@ -1117,7 +1131,24 @@ export function CinemaStudio() {
     addToQueue(queueItem);
     queueIdRef.current = queueItem.id;
 
+    const generation: GenerationDescriptor = {
+      id: queueItem.id,
+      providerId: selectedProvider,
+      providerName: selectedProviderData?.displayName || selectedProvider,
+      modelId: selectedModel,
+      type: 'image',
+      prompt: finalPrompt,
+      negativePrompt: negativePrompt.trim() || undefined,
+      params: { aspectRatio, batchSize, camera: cinemaCamera, lens: cinemaLens, focalLength: cinemaFocalLength, aperture: cinemaAperture, filmStock: cinemaFilmStock, colorGrade: cinemaColorGrade, lighting: cinemaLighting, scenePreset: cinemaScenePreset },
+      createdAt: queueItem.createdAt,
+    };
+    generationRef.current = generation;
+    setLatestGenerationId(null);
+    await beginGeneration(generation);
+
     try {
+      const apiKey = await apiKeysHook.getKeyForProvider(selectedProvider);
+      if (!apiKey) throw new Error('No API key configured for this provider. Add one in Settings.');
       const body: Record<string, unknown> = {
         providerId: selectedProvider,
         modelId: selectedModel,
@@ -1125,6 +1156,7 @@ export function CinemaStudio() {
         negativePrompt: negativePrompt.trim() || undefined,
         aspectRatio,
         batchSize,
+        apiKey,
       };
 
       const res = await fetch('/api/generate/image', {
@@ -1142,30 +1174,34 @@ export function CinemaStudio() {
       if (data.status === 'completed' && data.urls) {
         setLatestResult(data.urls[0] || null);
         setIsCinemaGenerating(false);
-        if (queueIdRef.current) {
-          updateQueueItem(queueIdRef.current, { status: 'completed', resultUrl: data.urls[0] || undefined });
-          queueIdRef.current = null;
-        }
+        const ids = await completeGeneration(generation, data.urls);
+        setLatestGenerationId(ids[0] || null);
+        if (queueIdRef.current) updateQueueItem(queueIdRef.current, { status: 'completed', resultUrl: data.urls[0] || undefined });
+        queueIdRef.current = null;
+        generationRef.current = null;
         toast.success('Cinematic image generated successfully!');
       } else if (data.status === 'processing' && data.id) {
         setCurrentJobId(data.id);
+        await markGenerationProcessing(generation, data.id);
         startPolling(data.id);
         toast.info('Generation in progress...');
       } else {
+        const message = 'Unexpected response from server';
+        await failGeneration(generation, message);
         setIsCinemaGenerating(false);
-        if (queueIdRef.current) {
-          updateQueueItem(queueIdRef.current, { status: 'failed' });
-          queueIdRef.current = null;
-        }
-        toast.error('Unexpected response from server');
+        if (queueIdRef.current) updateQueueItem(queueIdRef.current, { status: 'failed' });
+        queueIdRef.current = null;
+        generationRef.current = null;
+        toast.error(message);
       }
     } catch (err) {
+      const message = err instanceof Error ? err.message : 'Generation failed';
+      await failGeneration(generation, message);
       setIsCinemaGenerating(false);
-      if (queueIdRef.current) {
-        updateQueueItem(queueIdRef.current, { status: 'failed' });
-        queueIdRef.current = null;
-      }
-      toast.error(err instanceof Error ? err.message : 'Generation failed');
+      if (queueIdRef.current) updateQueueItem(queueIdRef.current, { status: 'failed' });
+      queueIdRef.current = null;
+      generationRef.current = null;
+      toast.error(message);
     }
   }, [
     selectedProvider,
@@ -1183,6 +1219,7 @@ export function CinemaStudio() {
     updateQueueItem,
     selectedProviderData,
     imageModels,
+    apiKeysHook,
   ]);
 
   // Keyboard shortcut: generate on trigger
@@ -1214,7 +1251,7 @@ export function CinemaStudio() {
   // Favorite helper
   const handleFavorite = useCallback(async (id: string) => {
     try {
-      await data.toggleGenerationFavorite(id, false);
+      await data.toggleGenerationFavorite(id, true);
       toast.success('Added to favorites');
     } catch {
       toast.error('Failed to favorite');
@@ -1511,8 +1548,8 @@ export function CinemaStudio() {
                     variant="outline"
                     size="sm"
                     onClick={() => {
-                      if (currentJobId) handleFavorite(currentJobId);
-                      else toast.info('Added to favorites');
+                      if (latestGenerationId) handleFavorite(latestGenerationId);
+                      else toast.error('This generation has not been saved yet');
                     }}
                     className="gap-2 border-border/60 bg-surface hover:bg-surface-hover"
                   >
