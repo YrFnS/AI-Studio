@@ -263,7 +263,7 @@ export const IMAGE_MODELS = [
   {
     providerName: "google-aistudio",
     name: "Gemini 2.5 Flash Image",
-    modelId: "gemini-2.5-flash-preview-image",
+    modelId: "gemini-2.5-flash-image",
     type: "image",
     capabilities: "t2i,i2i,edit",
     description: "Gemini 2.5 Flash with native image generation & editing (aka nano-banana). Conversational create & edit.",
@@ -374,7 +374,7 @@ export const IMAGE_MODELS = [
   {
     providerName: "google-vertex",
     name: "Gemini 2.5 Flash Image",
-    modelId: "gemini-2.5-flash-preview-image",
+    modelId: "gemini-2.5-flash-image",
     type: "image",
     capabilities: "t2i,i2i,edit",
     description: "Gemini 2.5 Flash with native image generation & editing via Vertex AI (aka nano-banana)",
