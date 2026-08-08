@@ -155,7 +155,7 @@ export function SidebarChangeOutfit() {
                       type="url"
                       value={outfitUrlInput}
                       onChange={(e) => setOutfitUrlInput(e.target.value)}
-                      placeholder="https://example.com/outfit.jpg"
+                      placeholder="https://images.pexels.com/photos/373912/pexels-photo-373912.jpeg?auto=compress&cs=tinysrgb&w=1400"
                       className="flex-1 rounded-md border border-border/30 bg-surface/50 px-2 py-0.5 text-[9px] text-foreground placeholder:text-muted-foreground/40 focus:border-[#d9ff00]/30 focus:outline-none focus:ring-1 focus:ring-[#d9ff00]/15 transition-colors"
                     />
                     <button

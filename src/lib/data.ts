@@ -18,7 +18,7 @@ const DEMO_GENERATIONS: GenerationRecord[] = [
   {
     id: 'demo-neon-city', providerId: 'demo', providerName: 'AI Studio Demo', modelId: 'flux-demo',
     type: 'image', prompt: 'A cinematic neon city after rain, reflective streets and atmospheric light',
-    resultUrl: 'https://images.unsplash.com/photo-1519608487953-e999c86e7455?auto=format&fit=crop&w=1400&q=85',
+    resultUrl: 'https://images.pexels.com/photos/373912/pexels-photo-373912.jpeg?auto=compress&cs=tinysrgb&w=1400',
     status: 'completed', isFavorite: true, width: 1400, height: 933, createdAt: Date.now() - 60 * 60 * 1000,
   },
   {
