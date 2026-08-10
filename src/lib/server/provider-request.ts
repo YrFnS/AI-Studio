@@ -2,6 +2,8 @@ export const PROVIDER_SUBMISSION_TIMEOUT_MS = 120_000;
 export const PROVIDER_STATUS_TIMEOUT_MS = 20_000;
 export const MAX_PROVIDER_ERROR_BYTES = 8 * 1024;
 
+type FetchInput = Parameters<typeof globalThis.fetch>[0];
+
 export type ProviderRequestErrorCode =
   | 'provider_auth_failed'
   | 'provider_rate_limited'
@@ -44,6 +46,48 @@ export interface ProviderFetchOptions {
   maxErrorBytes?: number;
 }
 
+function isFetchInput(value: unknown): value is FetchInput {
+  return typeof value === 'string'
+    || value instanceof URL
+    || (typeof Request !== 'undefined' && value instanceof Request);
+}
+
+function inferProvider(input: FetchInput): string {
+  const rawUrl = input instanceof Request
+    ? input.url
+    : input instanceof URL
+      ? input.toString()
+      : String(input);
+
+  let hostname: string;
+  try {
+    hostname = new URL(rawUrl).hostname.toLowerCase();
+  } catch {
+    return 'AI provider';
+  }
+
+  const providers: Array<[string, string]> = [
+    ['api.openai.com', 'OpenAI'],
+    ['api.stability.ai', 'Stability AI'],
+    ['api.replicate.com', 'Replicate'],
+    ['queue.fal.run', 'Fal.ai'],
+    ['api.together.xyz', 'Together AI'],
+    ['api.fireworks.ai', 'Fireworks AI'],
+    ['api.ideogram.ai', 'Ideogram'],
+    ['api-inference.huggingface.co', 'Hugging Face'],
+    ['generativelanguage.googleapis.com', 'Google AI Studio'],
+    ['cloud.leonardo.ai', 'Leonardo'],
+    ['api.recraft.ai', 'Recraft'],
+    ['api.bfl.ml', 'Black Forest Labs'],
+    ['api.aimlapi.com', 'AI/ML API'],
+    ['api.dev.runwayml.com', 'Runway'],
+    ['api.lumalabs.ai', 'Luma AI'],
+  ];
+
+  return providers.find(([domain]) => hostname === domain || hostname.endsWith(`.${domain}`))?.[1]
+    || 'AI provider';
+}
+
 function combineAbortSignals(
   timeoutSignal: AbortSignal,
   externalSignal?: AbortSignal | null,
@@ -79,11 +123,11 @@ async function readLimitedText(
     if (done) break;
     if (!value) continue;
 
+    const previousTotal = total;
     total += value.byteLength;
     if (total > maxBytes) {
-      output += decoder.decode(value.subarray(0, Math.max(0, maxBytes - (total - value.byteLength))), {
-        stream: true,
-      });
+      const remaining = Math.max(0, maxBytes - previousTotal);
+      output += decoder.decode(value.subarray(0, remaining), { stream: true });
       await reader.cancel();
       break;
     }
@@ -216,17 +260,43 @@ function wrapResponse(
   });
 }
 
-export async function providerFetch(
+export function providerFetch(
+  input: FetchInput,
+  init?: RequestInit,
+  options?: ProviderFetchOptions,
+): Promise<Response>;
+export function providerFetch(
   provider: string,
-  input: Parameters<typeof fetch>[0],
-  init: RequestInit = {},
-  options: ProviderFetchOptions = {},
+  input: FetchInput,
+  init?: RequestInit,
+  options?: ProviderFetchOptions,
+): Promise<Response>;
+export async function providerFetch(
+  providerOrInput: string | FetchInput,
+  inputOrInit?: FetchInput | RequestInit,
+  initOrOptions?: RequestInit | ProviderFetchOptions,
+  explicitOptions?: ProviderFetchOptions,
 ): Promise<Response> {
-  const timeoutMs = options.timeoutMs ?? PROVIDER_SUBMISSION_TIMEOUT_MS;
-  const maxErrorBytes = options.maxErrorBytes ?? MAX_PROVIDER_ERROR_BYTES;
+  const hasExplicitProvider = typeof providerOrInput === 'string'
+    && isFetchInput(inputOrInit);
+
+  const input = (hasExplicitProvider ? inputOrInit : providerOrInput) as FetchInput;
+  const provider = hasExplicitProvider
+    ? providerOrInput as string
+    : inferProvider(input);
+  const init = (hasExplicitProvider ? initOrOptions : inputOrInit) as RequestInit | undefined;
+  const options = (hasExplicitProvider ? explicitOptions : initOrOptions) as ProviderFetchOptions | undefined;
+
+  const timeoutMs = options?.timeoutMs ?? PROVIDER_SUBMISSION_TIMEOUT_MS;
+  const maxErrorBytes = options?.maxErrorBytes ?? MAX_PROVIDER_ERROR_BYTES;
   const timeoutController = new AbortController();
   let timedOut = false;
   let finished = false;
+
+  const timer = setTimeout(() => {
+    timedOut = true;
+    timeoutController.abort();
+  }, timeoutMs);
 
   const finish = () => {
     if (finished) return;
@@ -234,15 +304,10 @@ export async function providerFetch(
     clearTimeout(timer);
   };
 
-  const timer = setTimeout(() => {
-    timedOut = true;
-    timeoutController.abort();
-  }, timeoutMs);
-
   try {
-    const response = await fetch(input, {
-      ...init,
-      signal: combineAbortSignals(timeoutController.signal, init.signal),
+    const response = await globalThis.fetch(input, {
+      ...(init || {}),
+      signal: combineAbortSignals(timeoutController.signal, init?.signal),
     });
 
     if (!response.ok) {
