@@ -58,8 +58,8 @@ describe('generation route registry enforcement', () => {
 
   test('the provider endpoint decorates and filters the catalog through the registry', async () => {
     const content = await source('src/app/api/providers/route.ts');
-    expect(content).toContain('decorateRegisteredProviders(catalog)');
-    expect(content).not.toContain('model.capabilities,');
+    expect(content).toContain('const providersWithModels = decorateRegisteredProviders(catalog)');
+    expect(content).toContain('supportedGenerationKinds: getSupportedGenerationKinds(provider.name)');
   });
 
   test('generic route fallbacks are no longer exposed as upscale or variation adapters', async () => {
