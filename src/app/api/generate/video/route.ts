@@ -2,7 +2,11 @@ import { NextRequest, NextResponse } from 'next/server';
 
 import { encodeGenerationJobToken } from '@/lib/generation-job';
 import { PROVIDERS } from '@/lib/providers-data';
-import { supportsGeneration } from '@/lib/provider-capabilities';
+import {
+  GenerationRegistryError,
+  requireModelOperation,
+} from '@/lib/generation-registry';
+import { submitReplicatePrediction } from '@/lib/server/replicate';
 
 type AsyncVideoResult = {
   jobId: string;
@@ -192,21 +196,15 @@ async function generateReplicateVideo(
   if (params.imageUrl) input.image = params.imageUrl;
   if (params.endImageUrl && params.imageUrl) input.last_frame_image = params.endImageUrl;
 
-  const response = await fetch(`${providerBaseUrl}/v1/predictions`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ version: params.model, input }),
-  });
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Replicate video API error: ${response.status} - ${error}`);
+  const data = await submitReplicatePrediction(
+    providerBaseUrl,
+    params.model,
+    input,
+    apiKey,
+  );
+  if (typeof data.id !== 'string') {
+    throw new Error('Replicate did not return a prediction id');
   }
-
-  const data = await response.json();
-  if (!data.id) throw new Error('Replicate did not return a prediction id');
   return { jobId: data.id, modelId: params.model };
 }
 
@@ -304,19 +302,21 @@ export async function POST(req: NextRequest) {
     if (!provider) {
       return NextResponse.json({ error: 'Provider not found' }, { status: 404 });
     }
-    if (!supportsGeneration(provider.name, 'video')) {
-      return NextResponse.json(
-        { error: `Video generation is not supported for ${provider.displayName}` },
-        { status: 400 },
-      );
-    }
+
+    const sourceImage = startFrameUrl || imageUrl;
+    requireModelOperation(
+      provider.name,
+      modelId,
+      sourceImage ? 'image-to-video' : 'text-to-video',
+      'video',
+    );
 
     const params: VideoRequestParams = {
       prompt,
       model: modelId,
       duration: normalizeDuration(duration),
       aspectRatio: aspectRatio || '16:9',
-      imageUrl: startFrameUrl || imageUrl,
+      imageUrl: sourceImage,
       endImageUrl: endFrameUrl,
     };
 
@@ -359,6 +359,13 @@ export async function POST(req: NextRequest) {
       message: 'Video generation in progress. Poll /api/generate/status for results.',
     });
   } catch (error) {
+    if (error instanceof GenerationRegistryError) {
+      return NextResponse.json(
+        { error: error.message, code: error.code },
+        { status: error.status },
+      );
+    }
+
     console.error('Generate video error:', error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : 'Failed to generate video' },
