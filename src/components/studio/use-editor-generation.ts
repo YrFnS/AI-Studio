@@ -12,6 +12,7 @@ import {
   prepareGenerationOperation,
   type GenerationOperation,
   type GenerationOperationProvider,
+  type PreparedGenerationOperation,
 } from '@/lib/generation-operation';
 import { useAppStore } from '@/lib/store';
 
@@ -76,29 +77,31 @@ export function useEditorGeneration({
       return;
     }
 
-    const source = imageUrl || sourceImageUrl;
-    const prepared = prepareGenerationOperation({
-      operation,
-      providers,
-      configuredProviderIds,
-      preferredProviderId,
-      preferredModelId,
-      sourceImageUrl: source,
-      parentGenerationId,
-      prompt,
-      negativePrompt,
-      mask,
-      upscaleFactor,
-      allowProviderFallback: true,
-    });
+    let prepared: PreparedGenerationOperation;
+    try {
+      prepared = prepareGenerationOperation({
+        operation,
+        providers,
+        configuredProviderIds,
+        preferredProviderId,
+        preferredModelId,
+        sourceImageUrl: imageUrl || sourceImageUrl,
+        parentGenerationId,
+        prompt,
+        negativePrompt,
+        mask,
+        upscaleFactor,
+        // The editor keeps provider choice explicit. It may select a compatible
+        // model within that provider, but never silently bills another provider.
+        allowProviderFallback: false,
+      });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'This editor action is unavailable');
+      return;
+    }
 
-    if (
-      prepared.target.providerId !== preferredProviderId
-      || prepared.target.modelId !== preferredModelId
-    ) {
-      toast.info(
-        `Using ${prepared.target.providerName} · ${prepared.target.modelName} for this action.`,
-      );
+    if (prepared.target.modelId !== preferredModelId) {
+      toast.info(`Using ${prepared.target.modelName} for this editor action.`);
     }
 
     const owner = new AbortController();
