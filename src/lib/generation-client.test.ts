@@ -30,11 +30,16 @@ describe('explicit generation client', () => {
   });
 
   test('injects the provider key into generation submissions', async () => {
-    let submittedBody: Record<string, unknown> | null = null;
+    const submittedBodies: Record<string, unknown>[] = [];
     const client = createGenerationClient({
       fetchImpl: async (_input, init) => {
-        submittedBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
-        return jsonResponse({ status: 'completed', urls: ['https://example.com/a.png'] });
+        submittedBodies.push(
+          JSON.parse(String(init?.body)) as Record<string, unknown>,
+        );
+        return jsonResponse({
+          status: 'completed',
+          urls: ['https://example.com/a.png'],
+        });
       },
       getApiKey: async (providerId) =>
         providerId === 'openai' ? 'stored-openai-key' : null,
@@ -50,7 +55,8 @@ describe('explicit generation client', () => {
       }),
     });
 
-    expect(submittedBody).toMatchObject({
+    expect(submittedBodies).toHaveLength(1);
+    expect(submittedBodies[0]).toMatchObject({
       providerId: 'openai',
       modelId: 'gpt-image-1',
       prompt: 'test',
@@ -59,11 +65,17 @@ describe('explicit generation client', () => {
   });
 
   test('does not overwrite an explicitly supplied key', async () => {
-    let submittedBody: Record<string, unknown> | null = null;
+    const submittedBodies: Record<string, unknown>[] = [];
     const client = createGenerationClient({
       fetchImpl: async (_input, init) => {
-        submittedBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
-        return jsonResponse({ status: 'processing', id: 'aistudio-job.token', localJob: true });
+        submittedBodies.push(
+          JSON.parse(String(init?.body)) as Record<string, unknown>,
+        );
+        return jsonResponse({
+          status: 'processing',
+          id: 'aistudio-job.token',
+          localJob: true,
+        });
       },
       getApiKey: async () => 'stored-key',
     });
@@ -79,7 +91,8 @@ describe('explicit generation client', () => {
       }),
     });
 
-    expect(submittedBody?.apiKey).toBe('request-key');
+    expect(submittedBodies).toHaveLength(1);
+    expect(submittedBodies[0].apiKey).toBe('request-key');
   });
 
   test('converts legacy GET polling into a credential-safe POST', async () => {
@@ -87,7 +100,10 @@ describe('explicit generation client', () => {
     const client = createGenerationClient({
       fetchImpl: async (input, init) => {
         calls.push({ input, init });
-        return jsonResponse({ status: 'completed', resultUrl: 'https://example.com/result.png' });
+        return jsonResponse({
+          status: 'completed',
+          resultUrl: 'https://example.com/result.png',
+        });
       },
       getApiKey: async () => null,
     });
@@ -111,10 +127,12 @@ describe('explicit generation client', () => {
   });
 
   test('loads a missing polling key from IndexedDB through the resolver', async () => {
-    let statusBody: Record<string, unknown> | null = null;
+    const statusBodies: Record<string, unknown>[] = [];
     const client = createGenerationClient({
       fetchImpl: async (_input, init) => {
-        statusBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        statusBodies.push(
+          JSON.parse(String(init?.body)) as Record<string, unknown>,
+        );
         return jsonResponse({ status: 'processing' });
       },
       getApiKey: async (providerId) =>
@@ -131,7 +149,8 @@ describe('explicit generation client', () => {
       }),
     });
 
-    expect(statusBody).toEqual({
+    expect(statusBodies).toHaveLength(1);
+    expect(statusBodies[0]).toEqual({
       id: 'aistudio-job.token',
       apiKey: 'fal-key-from-storage',
       provider: 'fal',
