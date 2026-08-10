@@ -1,23 +1,23 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 
 import { PROVIDERS } from '@/lib/providers-data';
-import { resolveImageBlob } from '@/lib/server/image-input';
+import { requireModelOperation } from '@/lib/generation-registry';
 import {
-  GenerationRegistryError,
-  requireModelOperation,
-} from '@/lib/generation-registry';
+  MAX_SINGLE_IMAGE_REQUEST_BYTES,
+  parseGenerationRequest,
+  upscaleGenerationRequestSchema,
+} from '@/lib/server/generation-request';
+import {
+  generationErrorResponse,
+  noStoreJson,
+} from '@/lib/server/generation-response';
+import { resolveImageBlob } from '@/lib/server/image-input';
+import { providerFetch as fetch } from '@/lib/server/provider-request';
 
 export const runtime = 'nodejs';
 
 function getProviderById(id: string) {
   return PROVIDERS.find((provider) => provider.id === id);
-}
-
-function json(payload: Record<string, unknown>, status = 200) {
-  return NextResponse.json(payload, {
-    status,
-    headers: { 'Cache-Control': 'no-store' },
-  });
 }
 
 async function upscaleStability(
@@ -51,10 +51,6 @@ async function upscaleStability(
       body: formData,
     },
   );
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Stability Upscale API error: ${response.status} - ${error}`);
-  }
 
   const buffer = await response.arrayBuffer();
   return [`data:image/png;base64,${Buffer.from(buffer).toString('base64')}`];
@@ -62,7 +58,6 @@ async function upscaleStability(
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
     const {
       providerId,
       modelId,
@@ -71,29 +66,26 @@ export async function POST(req: NextRequest) {
       negativePrompt,
       apiKey,
       upscaleFactor,
-    } = body as {
-      providerId?: string;
-      modelId?: string;
-      imageUrl?: string;
-      prompt?: string;
-      negativePrompt?: string;
-      apiKey?: string;
-      upscaleFactor?: number;
-    };
-
-    if (!providerId || !modelId || !imageUrl) {
-      return json({ error: 'providerId, modelId, and imageUrl are required' }, 400);
-    }
-    if (!apiKey) return json({ error: 'API key is required' }, 400);
+    } = await parseGenerationRequest(
+      req,
+      upscaleGenerationRequestSchema,
+      MAX_SINGLE_IMAGE_REQUEST_BYTES,
+    );
 
     const provider = getProviderById(providerId);
-    if (!provider) return json({ error: 'Provider not found' }, 404);
+    if (!provider) {
+      return noStoreJson({
+        error: 'Provider not found',
+        code: 'provider_not_found',
+      }, 404);
+    }
 
     requireModelOperation(provider.name, modelId, 'upscale', 'upscale');
 
     if (provider.name !== 'stability') {
-      return json({
+      return noStoreJson({
         error: `No registered upscale adapter is available for ${provider.displayName}.`,
+        code: 'adapter_not_configured',
       }, 400);
     }
 
@@ -101,18 +93,14 @@ export async function POST(req: NextRequest) {
       imageUrl,
       prompt: prompt || 'Upscale this image while preserving its composition and details',
       negativePrompt,
-      upscaleFactor: upscaleFactor === 4 ? 4 : 2,
+      upscaleFactor,
     }, apiKey, provider.baseUrl);
 
-    return json({ status: 'completed', urls });
+    return noStoreJson({ status: 'completed', urls });
   } catch (error) {
-    if (error instanceof GenerationRegistryError) {
-      return json({ error: error.message, code: error.code }, error.status);
-    }
-
-    console.error('Upscale image error:', error);
-    return json({
-      error: error instanceof Error ? error.message : 'Failed to upscale image',
-    }, 500);
+    return generationErrorResponse(error, {
+      logLabel: 'Upscale image error',
+      fallbackMessage: 'Failed to upscale image',
+    });
   }
 }
