@@ -8,6 +8,30 @@ import {
   resolveGenerationOperationTarget,
   type GenerationOperationProvider,
 } from './generation-operation';
+import type {
+  GenerationOperationId,
+  GenerationRouteId,
+  ModelOperationContract,
+} from './generation-registry';
+
+function registered(
+  operation: GenerationOperationId,
+  routes: GenerationRouteId[],
+  adapterId: string,
+): {
+  operations: GenerationOperationId[];
+  operationContracts: ModelOperationContract[];
+} {
+  return {
+    operations: [operation],
+    operationContracts: [{
+      operation,
+      routes,
+      adapterId,
+      verification: 'contract-reviewed',
+    }],
+  };
+}
 
 const providers: GenerationOperationProvider[] = [
   {
@@ -22,12 +46,40 @@ const providers: GenerationOperationProvider[] = [
         type: 'image',
         capabilities: 't2i',
         isDefault: true,
+        ...registered('text-to-image', ['image'], 'openai.text-to-image'),
       },
       {
         modelId: 'gpt-image-1',
         name: 'GPT Image 1',
         type: 'image',
-        capabilities: 't2i,i2i,edit,inpaint',
+        capabilities: 't2i,edit,inpaint,variations',
+        operations: ['text-to-image', 'edit', 'inpaint', 'variation'],
+        operationContracts: [
+          {
+            operation: 'text-to-image',
+            routes: ['image'],
+            adapterId: 'openai.text-to-image',
+            verification: 'contract-reviewed',
+          },
+          {
+            operation: 'edit',
+            routes: ['edit'],
+            adapterId: 'openai.images-edits',
+            verification: 'contract-reviewed',
+          },
+          {
+            operation: 'inpaint',
+            routes: ['edit'],
+            adapterId: 'openai.images-edits',
+            verification: 'contract-reviewed',
+          },
+          {
+            operation: 'variation',
+            routes: ['variations'],
+            adapterId: 'openai.images-edits',
+            verification: 'contract-reviewed',
+          },
+        ],
       },
     ],
   },
@@ -40,20 +92,37 @@ const providers: GenerationOperationProvider[] = [
         modelId: 'stable-diffusion-3.5-large',
         name: 'SD 3.5 Large',
         type: 'image',
-        capabilities: 't2i',
+        capabilities: 't2i,variations',
         isDefault: true,
+        operations: ['text-to-image', 'variation'],
+        operationContracts: [
+          {
+            operation: 'text-to-image',
+            routes: ['image'],
+            adapterId: 'stability.text-to-image',
+            verification: 'contract-reviewed',
+          },
+          {
+            operation: 'variation',
+            routes: ['variations'],
+            adapterId: 'stability.sd3-image-to-image',
+            verification: 'contract-reviewed',
+          },
+        ],
       },
       {
         modelId: 'creative-upscale',
-        name: 'Creative Upscale',
+        name: 'Conservative Upscale',
         type: 'image',
         capabilities: 'upscale',
+        ...registered('upscale', ['upscale'], 'stability.conservative-upscale'),
       },
       {
         modelId: 'stable-image-erase',
         name: 'Erase/Inpaint',
         type: 'image',
         capabilities: 'inpaint',
+        ...registered('inpaint', ['edit'], 'stability.inpaint'),
       },
     ],
   },
@@ -68,6 +137,21 @@ const providers: GenerationOperationProvider[] = [
         type: 'video',
         capabilities: 't2v,i2v',
         isDefault: true,
+        operations: ['text-to-video', 'image-to-video'],
+        operationContracts: [
+          {
+            operation: 'text-to-video',
+            routes: ['video'],
+            adapterId: 'runway.text-to-video',
+            verification: 'contract-reviewed',
+          },
+          {
+            operation: 'image-to-video',
+            routes: ['video', 'img2vid'],
+            adapterId: 'runway.image-to-video',
+            verification: 'contract-reviewed',
+          },
+        ],
       },
     ],
   },
@@ -82,12 +166,28 @@ const providers: GenerationOperationProvider[] = [
         type: 'image',
         capabilities: 't2i',
         isDefault: true,
+        ...registered('text-to-image', ['image'], 'fal.text-to-image'),
       },
       {
         modelId: 'bytedance/seedance-2.0/text-to-video',
         name: 'Seedance 2.0',
         type: 'video',
         capabilities: 't2v,i2v',
+        operations: ['text-to-video', 'image-to-video'],
+        operationContracts: [
+          {
+            operation: 'text-to-video',
+            routes: ['video'],
+            adapterId: 'fal.text-to-video',
+            verification: 'adapter-implemented',
+          },
+          {
+            operation: 'image-to-video',
+            routes: ['video', 'img2vid'],
+            adapterId: 'fal.image-to-video',
+            verification: 'adapter-implemented',
+          },
+        ],
       },
     ],
   },
@@ -148,7 +248,10 @@ describe('generation operation routing', () => {
       upscaleFactor: 2,
     });
     expect(prepared.descriptor.parentGenerationId).toBe('img-parent');
-    expect(prepared.descriptor.params).toMatchObject({ action: 'upscale' });
+    expect(prepared.descriptor.params).toMatchObject({
+      action: 'upscale',
+      registryOperation: 'upscale',
+    });
     expect(prepared.body.apiKey).toBeUndefined();
   });
 
@@ -175,6 +278,29 @@ describe('generation operation routing', () => {
       negativePrompt: undefined,
     });
     expect(JSON.stringify(prepared.body)).not.toContain('apiKey');
+  });
+
+  test('does not trust legacy capability strings without registry contracts', () => {
+    const legacyOnly: GenerationOperationProvider[] = [{
+      id: 'legacy',
+      name: 'stability',
+      displayName: 'Legacy',
+      models: [{
+        modelId: 'legacy-upscale',
+        name: 'Legacy Upscale',
+        type: 'image',
+        capabilities: 'upscale',
+      }],
+    }];
+
+    expect(() => resolveGenerationOperationTarget({
+      operation: 'upscale',
+      providers: legacyOnly,
+      configuredProviderIds: ['legacy'],
+      preferredProviderId: 'legacy',
+      preferredModelId: 'legacy-upscale',
+      allowProviderFallback: false,
+    })).toThrow(GenerationOperationError);
   });
 
   test('fails clearly when no connected provider supports the action', () => {
