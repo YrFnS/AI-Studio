@@ -18,9 +18,11 @@ jobs:
   migrate-route-safety:
     name: Apply route safety migration
     if: >-
-      github.event_name == 'push' &&
-      github.ref == 'refs/heads/agent/p0-runtime-integrity' &&
-      github.actor != 'github-actions[bot]'
+      github.actor != 'github-actions[bot]' &&
+      (
+        github.ref == 'refs/heads/agent/p0-runtime-integrity' ||
+        github.head_ref == 'agent/p0-runtime-integrity'
+      )
     permissions:
       contents: write
     runs-on: ubuntu-latest
