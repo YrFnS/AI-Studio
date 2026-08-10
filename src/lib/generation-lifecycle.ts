@@ -179,7 +179,13 @@ function normalizeUrls(payload: Record<string, unknown>): string[] {
         (value): value is string => typeof value === 'string' && value.length > 0,
       )
     : [];
+  const images = Array.isArray(payload.images)
+    ? payload.images.filter(
+        (value): value is string => typeof value === 'string' && value.length > 0,
+      )
+    : [];
 
+  if (urls.length === 0 && images.length > 0) urls.push(...images);
   const resultUrl = asString(payload.resultUrl);
   if (urls.length === 0 && resultUrl) urls.push(resultUrl);
   return urls;

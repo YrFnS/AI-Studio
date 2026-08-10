@@ -6,6 +6,7 @@ import {
   startGenerationJob,
   type GenerationJobHandle,
 } from '@/lib/generation-lifecycle';
+import { prepareGenerationOperation } from '@/lib/generation-operation';
 
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -68,7 +69,7 @@ import {
 
 import { useAppStore } from '@/lib/store';
 import * as data from '@/lib/data';
-import { beginGeneration, completeGeneration, createGenerationId, failGeneration, markGenerationProcessing, type GenerationDescriptor } from '@/lib/generation-persistence';
+import { createGenerationId, type GenerationDescriptor } from '@/lib/generation-persistence';
 import { useApiKeys } from '@/hooks/use-api-keys';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -3353,8 +3354,8 @@ export function ImageStudio() {
   const setPromptLibraryOpen = useAppStore((s) => s.setPromptLibraryOpen);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [refImagePickerOpen, setRefImagePickerOpen] = useState(false);
-  const postGenPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const postGenPollCountRef = useRef(0);
+  const postGenHandleRef = useRef<GenerationJobHandle | null>(null);
+  const postGenOwnerRef = useRef<AbortController | null>(null);
   const isMobile = useIsMobile();
 
   // Loading state: rotating messages & elapsed time
@@ -3457,6 +3458,7 @@ export function ImageStudio() {
   useEffect(() => {
     return () => {
       imageGenerationOwnerRef.current?.abort('Image Studio unmounted');
+      postGenOwnerRef.current?.abort('Post-generation action detached');
     };
   }, []);
 
@@ -3907,149 +3909,170 @@ export function ImageStudio() {
     ? generationResults[selectedResultIndex] || latestResult
     : latestResult;
 
-  const handlePostGenAction = useCallback(async (action: 'upscale' | 'variation' | 'improve' | 'img2vid') => {
+  const handlePostGenAction = useCallback(async (
+    action: 'upscale' | 'variation' | 'improve' | 'img2vid',
+  ) => {
     if (!activeImageUrl) {
       toast.error('No image to process');
       return;
     }
-    if (!hasApiKey || !selectedImageProvider || !selectedImageModel) {
-      toast.error('Configure an API key, provider, and model first');
+
+    const activeHandle = postGenHandleRef.current;
+    if (
+      activeHandle
+      && ['submitting', 'processing'].includes(activeHandle.getSnapshot().state)
+    ) {
+      toast.info('A post-generation action is already in progress');
       return;
     }
 
+    const prepared = (() => {
+      try {
+        return prepareGenerationOperation({
+          operation: action,
+          providers,
+          configuredProviderIds: apiKeysHook.configuredProviderIds,
+          preferredProviderId: selectedImageProvider,
+          preferredModelId: selectedImageModel,
+          sourceImageUrl: activeImageUrl,
+          parentGenerationId:
+            generationResultIds[selectedResultIndex] || generationResultIds[0],
+          prompt: action === 'improve'
+            ? 'Enhanced, improved quality, better details, higher resolution version of: ' + imagePrompt
+            : imagePrompt || undefined,
+          negativePrompt: action === 'improve'
+            ? 'low quality, blurry, distorted, deformed, bad anatomy'
+            : imageNegativePrompt || undefined,
+          duration: 5,
+          aspectRatio: imageAspectRatio,
+          allowProviderFallback: true,
+        });
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : action + ' is unavailable');
+        return null;
+      }
+    })();
+    if (!prepared) return;
+
+    if (
+      prepared.target.providerId !== selectedImageProvider
+      || prepared.target.modelId !== selectedImageModel
+    ) {
+      toast.info(
+        'Using ' + prepared.target.providerName + ' · ' + prepared.target.modelName + ' for this action.',
+      );
+    }
+
+    const owner = new AbortController();
+    postGenOwnerRef.current = owner;
     setPostGenAction(action);
     setIsPostGenProcessing(true);
     setPostGenResult(null);
-    let derivedGeneration: GenerationDescriptor | null = null;
+
+    const handle = startGenerationJob({
+      descriptor: prepared.descriptor,
+      endpoint: prepared.endpoint,
+      body: prepared.body,
+      queue: {
+        port: {
+          add: addToQueue,
+          update: updateQueueItem,
+        },
+        metadata: {
+          prompt: prepared.descriptor.prompt,
+          providerName: prepared.target.providerName,
+          providerColor: prepared.target.providerColor,
+          modelName: prepared.target.modelName,
+        },
+      },
+      signal: owner.signal,
+      pollPolicy: {
+        maxElapsedMs: action === 'img2vid' ? 45 * 60 * 1000 : 30 * 60 * 1000,
+        maxConsecutiveErrors: 6,
+      },
+    });
+    postGenHandleRef.current = handle;
+
+    let processingNotified = false;
+    const unsubscribe = handle.subscribe((snapshot) => {
+      if (
+        !owner.signal.aborted
+        && snapshot.state === 'processing'
+        && !processingNotified
+      ) {
+        processingNotified = true;
+        toast.info(prepared.processingMessage);
+      }
+    });
 
     try {
-      const apiKey = await apiKeysHook.getKeyForProvider(selectedImageProvider);
-      if (!apiKey) throw new Error('No API key found for this provider');
+      const result = await handle.result;
+      if (owner.signal.aborted) return;
 
-      let endpoint = '';
-      let body: Record<string, unknown> = {};
-      switch (action) {
-        case 'upscale':
-          endpoint = '/api/generate/upscale';
-          body = { providerId: selectedImageProvider, modelId: selectedImageModel, imageUrl: activeImageUrl, upscaleFactor: 2, apiKey };
-          break;
-        case 'variation':
-          endpoint = '/api/generate/variations';
-          body = { providerId: selectedImageProvider, modelId: selectedImageModel, imageUrl: activeImageUrl, prompt: imagePrompt || 'Generate a variation of this image', variationStrength: 0.7, negativePrompt: imageNegativePrompt || undefined, apiKey };
-          break;
-        case 'improve':
-          endpoint = '/api/generate/variations';
-          body = { providerId: selectedImageProvider, modelId: selectedImageModel, imageUrl: activeImageUrl, prompt: `Enhanced, improved quality, better details, higher resolution version of: ${imagePrompt}`, variationStrength: 0.4, negativePrompt: 'low quality, blurry, distorted, deformed, ugly, bad anatomy', apiKey };
-          break;
-        case 'img2vid':
-          endpoint = '/api/generate/img2vid';
-          body = { providerId: selectedImageProvider, modelId: selectedImageModel, imageUrl: activeImageUrl, prompt: imagePrompt || 'Animate this image', duration: 5, apiKey };
-          break;
+      const resultUrl = result.urls[0];
+      if (!resultUrl) throw new Error('Provider completed without returning a result');
+      setPostGenResult(resultUrl);
+
+      if (prepared.target.type === 'image') {
+        setLatestResult(resultUrl);
+        setGenerationResults(result.urls);
+        setGenerationResultIds(result.generationIds);
+        setSelectedResultIndex(0);
       }
-
-      derivedGeneration = {
-        id: createGenerationId(action === 'img2vid' ? 'vid' : 'img'),
-        providerId: selectedImageProvider,
-        providerName: selectedProviderData?.displayName || selectedImageProvider,
-        modelId: selectedImageModel,
-        type: action === 'img2vid' ? 'video' : 'image',
-        prompt: typeof body.prompt === 'string' ? body.prompt : `${action}: ${imagePrompt || 'generated image'}`,
-        negativePrompt: typeof body.negativePrompt === 'string' ? body.negativePrompt : undefined,
-        inputImageUrl: activeImageUrl,
-        parentGenerationId: generationResultIds[selectedResultIndex] || generationResultIds[0],
-        params: { ...body, action },
-        createdAt: Date.now(),
-      };
-      await beginGeneration(derivedGeneration);
-
-      const res = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-      const responseData = await res.json();
-      if (!res.ok) throw new Error(responseData.error || `${action} failed`);
-
-      const applyCompletedResult = async (urls: string[], providerJobId?: string) => {
-        if (!derivedGeneration) return;
-        const ids = await completeGeneration(derivedGeneration, urls, providerJobId);
-        const resultUrl = urls[0];
-        if (!resultUrl) throw new Error('Provider completed without a result');
-        setPostGenResult(resultUrl);
-        if (derivedGeneration.type === 'image') {
-          setLatestResult(resultUrl);
-          setGenerationResults(urls);
-          setGenerationResultIds(ids);
-          setSelectedResultIndex(0);
-        }
-      };
-
-      const immediateUrls = responseData.urls || responseData.images;
-      if (responseData.status === 'completed' && immediateUrls?.[0]) {
-        await applyCompletedResult(immediateUrls);
-        toast.success(action === 'img2vid' ? 'Video generated and saved to the gallery!' : `${action === 'upscale' ? 'Upscaled' : action === 'variation' ? 'Variation created' : 'Image improved'}!`);
-      } else if (responseData.status === 'processing' && responseData.id) {
-        await markGenerationProcessing(derivedGeneration, responseData.id);
-        toast.info('Processing… This may take a moment.');
-        postGenPollCountRef.current = 0;
-        const pollInterval = setInterval(async () => {
-          postGenPollCountRef.current += 1;
-          if (postGenPollCountRef.current > 60) {
-            clearInterval(pollInterval);
-            postGenPollRef.current = null;
-            if (derivedGeneration) await failGeneration(derivedGeneration, 'Processing timed out', responseData.id);
-            setIsPostGenProcessing(false);
-            setPostGenAction(null);
-            toast.error('Processing timed out. The failed job was saved in the gallery.');
-            return;
-          }
-          try {
-            const statusRes = await fetch('/api/generate/status', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ id: responseData.id, apiKey, provider: selectedImageProvider, modelId: selectedImageModel }),
-            });
-            const statusData = await statusRes.json();
-            if (!statusRes.ok) throw new Error(statusData.error || 'Status check failed');
-            if (statusData.status === 'completed') {
-              clearInterval(pollInterval);
-              postGenPollRef.current = null;
-              const urls = statusData.urls || (statusData.resultUrl ? [statusData.resultUrl] : []);
-              await applyCompletedResult(urls, responseData.id);
-              setIsPostGenProcessing(false);
-              setPostGenAction(null);
-              toast.success(action === 'img2vid' ? 'Video generated and saved to the gallery!' : `${action === 'upscale' ? 'Upscaled' : action === 'variation' ? 'Variation created' : action === 'improve' ? 'Image improved' : 'Video generated'}!`);
-            } else if (statusData.status === 'failed') {
-              clearInterval(pollInterval);
-              postGenPollRef.current = null;
-              if (derivedGeneration) await failGeneration(derivedGeneration, statusData.error || `${action} failed`, responseData.id);
-              setIsPostGenProcessing(false);
-              setPostGenAction(null);
-              toast.error(statusData.error || `${action} failed`);
-            }
-          } catch (error) {
-            console.error('Post-generation polling failed', error);
-          }
-        }, 3000);
-        postGenPollRef.current = pollInterval;
-        return;
-      } else {
-        throw new Error('Unexpected response');
-      }
+      toast.success(prepared.successMessage);
     } catch (error) {
-      const message = error instanceof Error ? error.message : `${action} failed`;
-      if (derivedGeneration) await failGeneration(derivedGeneration, message);
-      toast.error(message);
+      if (owner.signal.aborted) return;
+      if (
+        error instanceof GenerationLifecycleError
+        && (error.code === 'detached' || error.code === 'cancelled')
+      ) {
+        return;
+      }
+      toast.error(error instanceof Error ? error.message : action + ' failed');
+    } finally {
+      unsubscribe();
+      if (postGenHandleRef.current === handle) postGenHandleRef.current = null;
+      if (postGenOwnerRef.current === owner) postGenOwnerRef.current = null;
+      if (!owner.signal.aborted) {
+        setIsPostGenProcessing(false);
+        setPostGenAction(null);
+      }
     }
+  }, [
+    activeImageUrl,
+    providers,
+    apiKeysHook.configuredProviderIds,
+    selectedImageProvider,
+    selectedImageModel,
+    imagePrompt,
+    imageNegativePrompt,
+    imageAspectRatio,
+    generationResultIds,
+    selectedResultIndex,
+    setPostGenAction,
+    setIsPostGenProcessing,
+    setPostGenResult,
+    setLatestResult,
+    setGenerationResults,
+    setSelectedResultIndex,
+    addToQueue,
+    updateQueueItem,
+  ]);
+
+  const handleCancelPostGenAction = useCallback(async () => {
+    const handle = postGenHandleRef.current;
+    const owner = postGenOwnerRef.current;
+
+    if (handle) {
+      await handle.cancel('Post-generation action cancelled by user');
+    } else {
+      owner?.abort('Post-generation action cancelled by user');
+    }
+
     setIsPostGenProcessing(false);
     setPostGenAction(null);
-  }, [activeImageUrl, hasApiKey, selectedImageProvider, selectedImageModel, imagePrompt, imageNegativePrompt, apiKeysHook, selectedProviderData, generationResultIds, selectedResultIndex, setLatestResult, setGenerationResults, setSelectedResultIndex, setPostGenAction, setIsPostGenProcessing, setPostGenResult]);
-
-  // Cleanup post-gen polling on unmount
-  useEffect(() => {
-    return () => {
-      if (postGenPollRef.current) {
-        clearInterval(postGenPollRef.current);
-        postGenPollRef.current = null;
-      }
-    };
-  }, []);
+    toast.info('Post-generation action cancelled');
+  }, [setIsPostGenProcessing, setPostGenAction]);
 
   // Generation loading: start timer & rotate messages
   useEffect(() => {
@@ -4811,7 +4834,7 @@ export function ImageStudio() {
                             type="button"
                             whileHover={{ scale: 1.05 }}
                             whileTap={{ scale: 0.95 }}
-                            disabled={isPostGenProcessing || !['runway', 'luma', 'fal', 'replicate', 'seedance'].includes(selectedImageProvider)}
+                            disabled={isPostGenProcessing || apiKeysHook.configuredProviderIds.length === 0}
                             onClick={() => handlePostGenAction('img2vid')}
                             className="flex flex-col items-center gap-1 rounded-lg border border-border/40 bg-surface px-2 py-2 text-center transition-all hover:border-[#d9ff00]/40 hover:bg-[#d9ff00]/5 group disabled:opacity-40"
                           >
@@ -4820,9 +4843,7 @@ export function ImageStudio() {
                           </motion.button>
                         </TooltipTrigger>
                         <TooltipContent side="bottom" className="text-xs">
-                          {['runway', 'luma', 'fal', 'replicate', 'seedance'].includes(selectedImageProvider)
-                            ? 'Animate this image into a video'
-                            : 'Switch to a video-capable provider (Runway, Luma, Fal, Replicate) to use this'}
+                          Uses a connected provider with a verified image-to-video model.
                         </TooltipContent>
                       </Tooltip>
 
@@ -4895,6 +4916,15 @@ export function ImageStudio() {
                             {postGenAction === 'improve' && 'Enhancing image…'}
                             {postGenAction === 'img2vid' && 'Converting to video…'}
                           </span>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={handleCancelPostGenAction}
+                            className="ml-auto h-7 text-[10px] text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                          >
+                            Cancel
+                          </Button>
                         </motion.div>
                       )}
                     </AnimatePresence>
@@ -4920,8 +4950,14 @@ export function ImageStudio() {
           imageUrl={editorImage}
           onClose={() => { setShowEditor(false); setEditorImage(null); }}
           providerId={selectedImageProvider}
-          onResult={(url) => {
+          parentGenerationId={
+            generationResultIds[selectedResultIndex] || generationResultIds[0]
+          }
+          onResult={(url, generationId) => {
             setLatestResult(url);
+            setGenerationResults([url]);
+            if (generationId) setGenerationResultIds([generationId]);
+            setSelectedResultIndex(0);
             setShowEditor(false);
             setEditorImage(null);
           }}

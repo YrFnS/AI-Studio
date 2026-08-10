@@ -1,6 +1,7 @@
 'use client';
 
 import { generationFetch as fetch } from '@/lib/generation-client';
+import { useEditorGeneration } from '@/components/studio/use-editor-generation';
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -51,7 +52,8 @@ export interface EditorControlsPanelProps {
   imageUrl: string;
   onClose: () => void;
   providerId: string;
-  onResult: (url: string) => void;
+  parentGenerationId?: string;
+  onResult: (url: string, generationId?: string) => void;
   tool: Tool;
   setTool: (t: Tool) => void;
   brushSize: number;
@@ -76,6 +78,7 @@ export function EditorControlsPanel({
   imageUrl,
   onClose,
   providerId,
+  parentGenerationId,
   onResult,
   tool,
   setTool,
@@ -97,21 +100,34 @@ export function EditorControlsPanel({
   // -----------------------------------------------------------------------
   const [prompt, setPrompt] = useState('');
   const [selectedModel, setSelectedModel] = useState('');
-  const [isLoading, setIsLoading] = useState(false);
 
   // -----------------------------------------------------------------------
   // State – Results & Comparison
   // -----------------------------------------------------------------------
-  const [editResult, setEditResult] = useState<string | null>(null);
   const [showComparison, setShowComparison] = useState(false);
   const [comparisonPos, setComparisonPos] = useState(50);
   const [isDraggingComp, setIsDraggingComp] = useState(false);
 
   const comparisonContainerRef = useRef<HTMLDivElement>(null);
   const apiKeysHook = useApiKeys();
+  const {
+    isLoading,
+    editResult,
+    runOperation,
+    cancelOperation,
+  } = useEditorGeneration({
+    providers,
+    configuredProviderIds: apiKeysHook.configuredProviderIds,
+    preferredProviderId: providerId,
+    preferredModelId: selectedModel,
+    sourceImageUrl: imageUrl,
+    parentGenerationId,
+    onResult,
+  });
 
   // -----------------------------------------------------------------------
-  // API calls
+  // -----------------------------------------------------------------------
+  // Generation lifecycle actions
   // -----------------------------------------------------------------------
   const handleInpaint = useCallback(async () => {
     if (!prompt.trim()) {
@@ -126,191 +142,57 @@ export function EditorControlsPanel({
       toast.error('Please select a model');
       return;
     }
-    if (!hasApiKey) {
-      toast.error('No API key configured for this provider');
+
+    const maskBase64 = exportMask();
+    const imageBase64 = exportOriginalImage();
+    if (!maskBase64 || !imageBase64) {
+      toast.error('The source image or edit mask could not be prepared');
       return;
     }
 
-    setIsLoading(true);
-    try {
-      const maskBase64 = exportMask();
-      const imageBase64 = exportOriginalImage();
-
-      // Get API key from IndexedDB (BYOK model)
-      const apiKey = await apiKeysHook.getKeyForProvider(providerId);
-      if (!apiKey) {
-        toast.error('No API key configured for this provider');
-        setIsLoading(false);
-        return;
-      }
-
-      const body: Record<string, unknown> = {
-        providerId,
-        modelId: selectedModel,
-        prompt: prompt.trim(),
-        type: 'edit',
-        image: imageBase64,
-        mask: maskBase64,
-        apiKey,
-      };
-
-      const res = await fetch('/api/generate/edit', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Inpainting failed');
-
-      if (data.status === 'completed' && (data.images?.[0] || data.urls?.[0])) {
-        const resultUrl = data.images?.[0] || data.urls[0];
-        setEditResult(resultUrl);
-        onResult(resultUrl);
-        toast.success('Inpainting completed!');
-      } else if (data.status === 'processing' && data.id) {
-        toast.info('Inpainting in progress…');
-        // Poll for result
-        const poll = setInterval(async () => {
-          try {
-            const sr = await fetch(`/api/generate/status?id=${data.id}${apiKey ? `&apiKey=${encodeURIComponent(apiKey)}` : ''}`);
-            const sd = await sr.json();
-            if (sd.status === 'completed') {
-              clearInterval(poll);
-              setEditResult(sd.resultUrl || sd.urls?.[0]);
-              onResult(sd.resultUrl || sd.urls?.[0]);
-              setIsLoading(false);
-              toast.success('Inpainting completed!');
-            } else if (sd.status === 'failed') {
-              clearInterval(poll);
-              setIsLoading(false);
-              toast.error(sd.error || 'Inpainting failed');
-            }
-          } catch {
-            /* retry */
-          }
-        }, 3000);
-        return; // don't setIsLoading(false) yet
-      } else {
-        throw new Error('Unexpected response');
-      }
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Inpainting failed');
-    }
-    setIsLoading(false);
-  }, [prompt, strokes, selectedModel, hasApiKey, providerId, apiKeysHook, exportMask, exportOriginalImage, onResult]);
+    await runOperation({
+      operation: 'inpaint',
+      prompt: prompt.trim(),
+      imageUrl: imageBase64,
+      mask: maskBase64,
+    });
+  }, [prompt, strokes, selectedModel, exportMask, exportOriginalImage, runOperation]);
 
   const handleUpscale = useCallback(async () => {
-    if (!selectedModel || !hasApiKey) {
-      toast.error('Please configure a provider with an API key');
+    if (!selectedModel) {
+      toast.error('Please select a model');
       return;
     }
-
-    setIsLoading(true);
-    try {
-      const imageBase64 = exportOriginalImage();
-      // Find an upscale-capable model, fall back to current model
-      const upscaleModel =
-        editModels.find((m) => (m.capabilities || '').toLowerCase().includes('upscale'))?.modelId ||
-        selectedModel;
-
-      // Get API key from IndexedDB (BYOK model)
-      const apiKey = await apiKeysHook.getKeyForProvider(providerId);
-      if (!apiKey) {
-        toast.error('No API key configured for this provider');
-        setIsLoading(false);
-        return;
-      }
-
-      const body: Record<string, unknown> = {
-        providerId,
-        modelId: upscaleModel,
-        prompt: 'Upscale this image to 2x resolution',
-        type: 'upscale',
-        inputImageUrl: imageBase64,
-        apiKey,
-      };
-
-      const res = await fetch('/api/generate/image', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Upscale failed');
-
-      if (data.status === 'completed' && data.urls?.[0]) {
-        setEditResult(data.urls[0]);
-        onResult(data.urls[0]);
-        toast.success('Upscale completed!');
-      } else if (data.status === 'processing') {
-        toast.info('Upscale in progress…');
-      } else {
-        throw new Error('Unexpected response');
-      }
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Upscale failed');
+    const imageBase64 = exportOriginalImage();
+    if (!imageBase64) {
+      toast.error('The source image could not be prepared');
+      return;
     }
-    setIsLoading(false);
-  }, [selectedModel, hasApiKey, providerId, apiKeysHook, editModels, exportOriginalImage, onResult]);
+    await runOperation({
+      operation: 'upscale',
+      prompt: 'Upscale this image and preserve its composition and details',
+      imageUrl: imageBase64,
+      upscaleFactor: 2,
+    });
+  }, [selectedModel, exportOriginalImage, runOperation]);
 
   const handleVariation = useCallback(async () => {
     if (!selectedModel) {
       toast.error('Please select a model');
       return;
     }
-    if (!hasApiKey) {
-      toast.error('No API key configured for this provider');
+    const imageBase64 = exportOriginalImage();
+    if (!imageBase64) {
+      toast.error('The source image could not be prepared');
       return;
     }
+    await runOperation({
+      operation: 'variation',
+      prompt: prompt.trim() || 'Generate a variation of this image',
+      imageUrl: imageBase64,
+    });
+  }, [selectedModel, prompt, exportOriginalImage, runOperation]);
 
-    setIsLoading(true);
-    try {
-      const imageBase64 = exportOriginalImage();
-
-      // Get API key from IndexedDB (BYOK model)
-      const apiKey = await apiKeysHook.getKeyForProvider(providerId);
-      if (!apiKey) {
-        toast.error('No API key configured for this provider');
-        setIsLoading(false);
-        return;
-      }
-
-      const body: Record<string, unknown> = {
-        providerId,
-        modelId: selectedModel,
-        prompt: prompt.trim() || 'Generate a variation of this image',
-        type: 'variation',
-        inputImageUrl: imageBase64,
-        apiKey,
-      };
-
-      const res = await fetch('/api/generate/image', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Variation failed');
-
-      if (data.status === 'completed' && data.urls?.[0]) {
-        setEditResult(data.urls[0]);
-        onResult(data.urls[0]);
-        toast.success('Variation generated!');
-      } else if (data.status === 'processing') {
-        toast.info('Variation in progress…');
-      } else {
-        throw new Error('Unexpected response');
-      }
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Variation failed');
-    }
-    setIsLoading(false);
-  }, [selectedModel, hasApiKey, providerId, apiKeysHook, prompt, exportOriginalImage, onResult]);
-
-  // -----------------------------------------------------------------------
   // Download helper
   // -----------------------------------------------------------------------
   const handleDownload = useCallback(async (url: string) => {
@@ -570,6 +452,18 @@ export function EditorControlsPanel({
                       Variation
                     </Button>
                   </div>
+                  {isLoading && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={cancelOperation}
+                      className="w-full border-destructive/30 bg-destructive/5 text-destructive hover:bg-destructive/10"
+                    >
+                      <X className="mr-1.5 h-3.5 w-3.5" />
+                      Cancel editor action
+                    </Button>
+                  )}
                 </div>
 
                 {/* No-key warning */}
