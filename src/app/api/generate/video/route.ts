@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+import { encodeGenerationJobToken } from '@/lib/generation-job';
 import { PROVIDERS } from '@/lib/providers-data';
 import { supportsGeneration } from '@/lib/provider-capabilities';
-import { registerGenerationJob } from '@/lib/server-generation-store';
 
 type AsyncVideoResult = {
   jobId: string;
@@ -344,11 +344,11 @@ export async function POST(req: NextRequest) {
         );
     }
 
-    const localJobId = registerGenerationJob({
-      provider: provider.name,
-      providerJobId: result.jobId,
+    const localJobId = encodeGenerationJobToken({
+      providerId: provider.name,
+      jobId: result.jobId,
       modelId: result.modelId || modelId,
-      apiKey,
+      kind: 'video',
     });
 
     return NextResponse.json({
