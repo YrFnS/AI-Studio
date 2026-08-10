@@ -275,6 +275,8 @@ export function createGenerationLifecycleClient(
     descriptor: GenerationDescriptor,
     queue: GenerationLifecycleQueueConfig | undefined,
     externalSignal: AbortSignal | undefined,
+    initialState: 'submitting' | 'processing',
+    preservedFailureCodes: ReadonlySet<GenerationLifecycleErrorCode>,
     execute: (context: {
       signal: AbortSignal;
       setProcessing: (providerJobId: string) => Promise<void>;
@@ -283,7 +285,6 @@ export function createGenerationLifecycleClient(
         payload: Record<string, unknown>,
         providerJobId?: string,
       ) => Promise<GenerationLifecycleResult>;
-      getProviderJobId: () => string | undefined;
     }) => Promise<GenerationLifecycleResult>,
   ): GenerationJobHandle => {
     const controller = new AbortController();
@@ -342,6 +343,12 @@ export function createGenerationLifecycleClient(
       payload: Record<string, unknown>,
       jobId?: string,
     ): Promise<GenerationLifecycleResult> => {
+      if (urls.length === 0) {
+        throw new GenerationLifecycleError(
+          'Provider completed without returning a result',
+          { code: 'invalid-response', providerJobId: jobId || providerJobId },
+        );
+      }
       if (terminal || finalizing) {
         throw new GenerationLifecycleError(
           'Generation already reached a terminal state',
@@ -358,8 +365,8 @@ export function createGenerationLifecycleClient(
       if (generationIds.length === 0) {
         finalizing = false;
         throw new GenerationLifecycleError(
-          'Provider completed without returning a result',
-          { code: 'invalid-response', providerJobId },
+          'Generation results could not be persisted',
+          { code: 'failed', providerJobId },
         );
       }
       terminal = true;
@@ -400,13 +407,9 @@ export function createGenerationLifecycleClient(
     }
 
     const result = (async () => {
+      emit({ state: initialState });
       try {
-        return await execute({
-          signal: controller.signal,
-          setProcessing,
-          complete,
-          getProviderJobId: () => providerJobId,
-        });
+        return await execute({ signal: controller.signal, setProcessing, complete });
       } catch (rawError) {
         const error = pollingErrorToLifecycle(rawError, providerJobId);
         if (controller.signal.aborted && cancelReason === null) {
@@ -414,6 +417,10 @@ export function createGenerationLifecycleClient(
             'Generation lifecycle detached from this page',
             { code: 'detached', providerJobId, cause: error },
           );
+        }
+        if (preservedFailureCodes.has(error.code)) {
+          emit({ state: 'processing', error: error.message, providerJobId });
+          throw error;
         }
 
         const terminalError = cancelReason
@@ -458,8 +465,9 @@ export function createGenerationLifecycleClient(
       descriptor,
       options.queue,
       options.signal,
+      'submitting',
+      new Set(),
       async ({ signal, setProcessing, complete }) => {
-        emitStartStatePlaceholder();
         await dependencies.beginImpl(descriptor);
 
         const response = await dependencies.fetchImpl(options.endpoint, {
@@ -502,10 +510,10 @@ export function createGenerationLifecycleClient(
             policy: options.pollPolicy,
           },
         );
-        const urls = normalizeUrls(completedPayload(payload));
+        const normalizedPayload = completedPayload(payload);
         return complete(
-          urls,
-          completedPayload(payload),
+          normalizeUrls(normalizedPayload),
+          normalizedPayload,
           submission.providerJobId,
         );
       },
@@ -514,21 +522,25 @@ export function createGenerationLifecycleClient(
 
   const resume = (options: ResumeGenerationJobOptions): GenerationJobHandle => {
     const { descriptor, providerJobId } = options;
+    const preserved = options.preserveOnMissingApiKey === false
+      ? new Set<GenerationLifecycleErrorCode>()
+      : new Set<GenerationLifecycleErrorCode>(['missing-api-key']);
+
     return createHandle(
       descriptor,
       options.queue,
       options.signal,
+      'processing',
+      preserved,
       async ({ signal, setProcessing, complete }) => {
         await setProcessing(providerJobId);
         const apiKey = options.apiKey
           || await dependencies.getApiKey(descriptor.providerId);
         if (!apiKey) {
-          const error = new GenerationLifecycleError(
+          throw new GenerationLifecycleError(
             'Reconnect this provider to resume the interrupted generation.',
             { code: 'missing-api-key', providerJobId },
           );
-          if (options.preserveOnMissingApiKey !== false) throw error;
-          throw error;
         }
 
         const payload = await dependencies.pollImpl(
@@ -554,10 +566,6 @@ export function createGenerationLifecycleClient(
       },
     );
   };
-
-  // The closure is replaced per-handle before submission through subscribe.
-  // This no-op keeps the start executor free from lifecycle implementation details.
-  function emitStartStatePlaceholder(): void {}
 
   return { start, resume };
 }
