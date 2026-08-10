@@ -110,3 +110,5 @@ console.log('Migrated generation callers to the explicit client:');
 for (const file of migrated) console.log(`- ${file}`);
 console.log('- src/app/layout.tsx (removed global bridge mount)');
 console.log('- src/components/secure-provider-fetch-bridge.tsx (deleted)');
+
+// Rerun marker: the explicit client test suite is now type-safe.
