@@ -9,6 +9,7 @@ const supportedExtensions = new Set(['.ts', '.tsx']);
 const skippedFiles = new Set([
   path.normalize('src/lib/generation-client.ts'),
   path.normalize('src/lib/generation-client.test.ts'),
+  path.normalize('src/lib/generation-client-coverage.test.ts'),
   path.normalize('src/lib/generation-poller.ts'),
   path.normalize('src/lib/generation-poller.test.ts'),
   path.normalize('src/components/secure-provider-fetch-bridge.tsx'),
@@ -34,13 +35,13 @@ function repositoryPath(filePath) {
   return path.normalize(path.relative(repositoryRoot, filePath));
 }
 
+function isClientModule(content) {
+  return content.startsWith("'use client';") || content.startsWith('"use client";');
+}
+
 function insertExplicitImport(content, filePath) {
   if (content.includes(explicitImport)) return content;
-  if (!content.startsWith("'use client';") && !content.startsWith('"use client";')) {
-    throw new Error(
-      `${repositoryPath(filePath)} calls generation APIs but is not an explicit client module`,
-    );
-  }
+  if (!isClientModule(content)) return content;
 
   if (/\b(?:const|let|var|function)\s+fetch\b/.test(content)) {
     throw new Error(
@@ -76,7 +77,7 @@ async function migrateGenerationCallers() {
   }
 
   if (migrated.length === 0) {
-    throw new Error('No generation callers were migrated');
+    throw new Error('No browser generation callers were migrated');
   }
 
   return migrated;
@@ -110,5 +111,3 @@ console.log('Migrated generation callers to the explicit client:');
 for (const file of migrated) console.log(`- ${file}`);
 console.log('- src/app/layout.tsx (removed global bridge mount)');
 console.log('- src/components/secure-provider-fetch-bridge.tsx (deleted)');
-
-// Rerun marker: the explicit client test suite is now type-safe.
