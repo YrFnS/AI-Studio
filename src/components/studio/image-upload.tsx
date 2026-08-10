@@ -15,6 +15,11 @@ import {
   DialogDescription,
   DialogTrigger,
 } from '@/components/ui/dialog';
+import {
+  formatReferenceImageSize as formatFileSize,
+  MAX_REFERENCE_IMAGE_LABEL,
+  validateReferenceImageFile,
+} from '@/lib/reference-image-limits';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -39,29 +44,14 @@ interface PreviewData {
 // Constants
 // ---------------------------------------------------------------------------
 
-const ACCEPTED_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
 const ACCEPTED_EXTENSIONS = '.png,.jpeg,.jpg,.webp,.gif';
-const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20 MB
-const MAX_FILE_SIZE_LABEL = '20MB';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function formatFileSize(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
 function validateFile(file: File): string | null {
-  if (!ACCEPTED_TYPES.includes(file.type)) {
-    return `Unsupported file type "${file.type}". Accepted: PNG, JPEG, WebP, GIF.`;
-  }
-  if (file.size > MAX_FILE_SIZE) {
-    return `File exceeds ${MAX_FILE_SIZE_LABEL} limit (${formatFileSize(file.size)}).`;
-  }
-  return null;
+  return validateReferenceImageFile(file);
 }
 
 // ---------------------------------------------------------------------------
@@ -174,7 +164,7 @@ function DropzoneArea({
               {fmt}
             </Badge>
           ))}
-          <span className="text-[10px] text-muted-foreground/60 ml-1">Max {MAX_FILE_SIZE_LABEL}</span>
+          <span className="text-[10px] text-muted-foreground/60 ml-1">Max {MAX_REFERENCE_IMAGE_LABEL}</span>
         </div>
       )}
     </motion.div>

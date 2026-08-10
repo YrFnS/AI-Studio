@@ -44,6 +44,10 @@ import {
 
 import { useAppStore } from '@/lib/store';
 import { saveReferenceImage } from '@/lib/idb';
+import {
+  MAX_REFERENCE_IMAGE_LABEL,
+  validateReferenceImageFile,
+} from '@/lib/reference-image-limits';
 import { useApiKeys } from '@/hooks/use-api-keys';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -221,8 +225,9 @@ function ImageUploadSlot({
 
   // Handle file upload → convert to base64
   const handleFile = (file: File) => {
-    if (!file.type.startsWith('image/')) {
-      toast.error('Please upload an image file');
+    const error = validateReferenceImageFile(file);
+    if (error) {
+      toast.error(error);
       return;
     }
     const reader = new FileReader();
@@ -357,7 +362,7 @@ function ImageUploadSlot({
             <p className="text-xs text-muted-foreground">
               {isDragOver ? 'Drop image here' : 'Click or drag to upload'}
             </p>
-            <p className="text-[10px] text-muted-foreground/40 mt-0.5">PNG, JPG, WebP</p>
+            <p className="text-[10px] text-muted-foreground/40 mt-0.5">PNG, JPG, WebP • Max {MAX_REFERENCE_IMAGE_LABEL}</p>
           </div>
           <button
             type="button"

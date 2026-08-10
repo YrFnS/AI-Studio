@@ -110,7 +110,7 @@ async function assertPublicHostname(hostname: string): Promise<void> {
     return;
   }
 
-  let addresses: Awaited<ReturnType<typeof lookup>>;
+  let addresses: Array<{ address: string; family: number }>;
   try {
     addresses = await lookup(normalized, { all: true, verbatim: true });
   } catch {

@@ -111,6 +111,7 @@ import { SocialExportModal } from '@/components/social-export-modal';
 import { ImageUpload } from '@/components/studio/image-upload';
 import { ReferenceImagePicker } from '@/components/studio/reference-image-picker';
 import { saveReferenceImage } from '@/lib/idb';
+import { validateReferenceImageFile } from '@/lib/reference-image-limits';
 import { RecentBar } from '@/components/studio/recent-bar';
 import { RecentGenerations } from '@/components/studio/recent-generations';
 import { PromptSuggestions } from '@/components/studio/prompt-suggestions';
@@ -2176,6 +2177,11 @@ function SidebarContent({
                       input.onchange = (e) => {
                         const file = (e.target as HTMLInputElement).files?.[0];
                         if (file) {
+                          const error = validateReferenceImageFile(file);
+                          if (error) {
+                            toast.error(error);
+                            return;
+                          }
                           const reader = new FileReader();
                           reader.onload = (ev) => {
                             const result = ev.target?.result as string;
@@ -2201,7 +2207,12 @@ function SidebarContent({
                       e.stopPropagation();
                       (e.currentTarget as HTMLElement).classList.remove('border-[#d9ff00]/50', 'bg-[#d9ff00]/5');
                       const file = e.dataTransfer.files?.[0];
-                      if (file && file.type.startsWith('image/')) {
+                      if (file) {
+                        const error = validateReferenceImageFile(file);
+                        if (error) {
+                          toast.error(error);
+                          return;
+                        }
                         const reader = new FileReader();
                         reader.onload = (ev) => {
                           const result = ev.target?.result as string;

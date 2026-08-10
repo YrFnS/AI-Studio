@@ -1,6 +1,7 @@
 import type { GenerateParams } from '@/lib/types';
 import { resolveImageBlob } from '@/lib/server/image-input';
 import { submitReplicatePrediction } from '@/lib/server/replicate';
+import { providerFetch as fetch } from '@/lib/server/provider-request';
 
 export async function generateOpenAI(
   params: GenerateParams,
