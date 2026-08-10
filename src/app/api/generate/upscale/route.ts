@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { encodeGenerationJobToken } from '@/lib/generation-job';
 import { PROVIDERS } from '@/lib/providers-data';
-import { registerGenerationJob } from '@/lib/server-generation-store';
 import { resolveImageBlob } from '@/lib/server/image-input';
 
 export const runtime = 'nodejs';
@@ -76,7 +76,7 @@ async function upscaleReplicate(
       Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ model: params.modelId, input }),
+    body: JSON.stringify({ version: params.modelId, input }),
   });
   if (!response.ok) {
     const error = await response.text();
@@ -232,11 +232,11 @@ export async function POST(req: NextRequest) {
     }
 
     if (result.status === 'processing') {
-      const localJobId = registerGenerationJob({
-        provider: provider.name,
-        providerJobId: result.jobId,
+      const localJobId = encodeGenerationJobToken({
+        providerId: provider.name,
+        jobId: result.jobId,
         modelId: effectiveModelId,
-        apiKey,
+        kind: 'image',
       });
       return json({
         id: localJobId,
