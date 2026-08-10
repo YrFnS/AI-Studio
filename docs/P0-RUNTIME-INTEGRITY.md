@@ -137,6 +137,16 @@ Automated coverage now includes:
 - Unsupported edit-provider rejection.
 - Prevention of the duplicate Cinema scene suffix.
 
+The cleaned permanent branch passed GitHub Actions CI run **#191** on head `02b169466b715d4956583213202130e4c5a5b264`:
+
+- `bun install --frozen-lockfile`
+- `bun run typecheck`
+- `bun run test`
+- `bun run lint`
+- `bun run build:app`
+
+The external Vercel check did not run a build because the account reached its build-rate limit. This is recorded separately from the successful repository production build.
+
 ## Remaining P0 work
 
 ### Cancellation and recovery experience
