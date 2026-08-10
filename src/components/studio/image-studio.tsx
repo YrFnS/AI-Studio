@@ -1,6 +1,11 @@
 'use client';
 
 import { generationFetch as fetch } from '@/lib/generation-client';
+import {
+  GenerationLifecycleError,
+  startGenerationJob,
+  type GenerationJobHandle,
+} from '@/lib/generation-lifecycle';
 
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -64,7 +69,6 @@ import {
 import { useAppStore } from '@/lib/store';
 import * as data from '@/lib/data';
 import { beginGeneration, completeGeneration, createGenerationId, failGeneration, markGenerationProcessing, type GenerationDescriptor } from '@/lib/generation-persistence';
-import type { GenerationQueueItem } from '@/lib/store';
 import { useApiKeys } from '@/hooks/use-api-keys';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -3337,9 +3341,9 @@ export function ImageStudio() {
   const [providersLoading, setProvidersLoading] = useState(true);
   const [showNegPrompt, setShowNegPrompt] = useState(false);
 
-  const [currentJobId, setCurrentJobId] = useState<string | null>(null);
   const [generationResultIds, setGenerationResultIds] = useState<string[]>([]);
-  const generationRef = useRef<GenerationDescriptor | null>(null);
+  const imageGenerationHandleRef = useRef<GenerationJobHandle | null>(null);
+  const imageGenerationOwnerRef = useRef<AbortController | null>(null);
   const [showEditor, setShowEditor] = useState(false);
   const [socialExportOpen, setSocialExportOpen] = useState(false);
   const [editorImage, setEditorImage] = useState<string | null>(null);
@@ -3347,10 +3351,8 @@ export function ImageStudio() {
   const [activeStylePreset, setActiveStylePreset] = useState<string | null>(null);
   const addPromptToHistory = useAppStore((s) => s.addPromptToHistory);
   const setPromptLibraryOpen = useAppStore((s) => s.setPromptLibraryOpen);
-  const queueIdRef = useRef<string | null>(null);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [refImagePickerOpen, setRefImagePickerOpen] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const postGenPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const postGenPollCountRef = useRef(0);
   const isMobile = useIsMobile();
@@ -3451,71 +3453,10 @@ export function ImageStudio() {
 
 
 
-  // Polling logic — API keys stay in the POST body, never in the URL.
-  const startPolling = useCallback(
-    (providerJobId: string) => {
-      if (pollRef.current) clearInterval(pollRef.current);
-
-      pollRef.current = setInterval(async () => {
-        try {
-          const apiKey = await apiKeysHook.getKeyForProvider(selectedImageProvider);
-          if (!apiKey) throw new Error('API key is no longer available');
-          const res = await fetch('/api/generate/status', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              id: providerJobId,
-              apiKey,
-              provider: selectedImageProvider,
-              modelId: selectedImageModel,
-            }),
-          });
-          const statusData = await res.json();
-          if (!res.ok) throw new Error(statusData.error || 'Status check failed');
-
-          if (statusData.status === 'completed') {
-            const allUrls = statusData.urls || (statusData.resultUrl ? [statusData.resultUrl] : []);
-            const descriptor = generationRef.current;
-            if (descriptor) {
-              const ids = await completeGeneration(descriptor, allUrls, providerJobId);
-              setGenerationResultIds(ids);
-            }
-            setIsImageGenerating(false);
-            setLatestResult(statusData.resultUrl || statusData.urls?.[0] || null);
-            setGenerationResults(allUrls);
-            setSelectedResultIndex(0);
-            setCurrentJobId(null);
-            setGenerationDuration(genStartTime ? (Date.now() - genStartTime) / 1000 : null);
-            if (queueIdRef.current) updateQueueItem(queueIdRef.current, { status: 'completed', resultUrl: allUrls[0] || undefined });
-            queueIdRef.current = null;
-            generationRef.current = null;
-            if (pollRef.current) clearInterval(pollRef.current);
-            pollRef.current = null;
-            toast.success(allUrls.length > 1 ? `${allUrls.length} images generated successfully!` : 'Image generated successfully!');
-          } else if (statusData.status === 'failed') {
-            const descriptor = generationRef.current;
-            if (descriptor) await failGeneration(descriptor, statusData.error || 'Generation failed', providerJobId);
-            setIsImageGenerating(false);
-            setCurrentJobId(null);
-            if (queueIdRef.current) updateQueueItem(queueIdRef.current, { status: 'failed' });
-            queueIdRef.current = null;
-            generationRef.current = null;
-            if (pollRef.current) clearInterval(pollRef.current);
-            pollRef.current = null;
-            toast.error(statusData.error || 'Generation failed');
-          }
-        } catch (error) {
-          console.error('Image status polling failed', error);
-        }
-      }, 3000);
-    },
-    [setIsImageGenerating, setLatestResult, setGenerationResults, setSelectedResultIndex, setGenerationDuration, apiKeysHook, selectedImageProvider, selectedImageModel, updateQueueItem, genStartTime]
-  );
-
-  // Cleanup polling on unmount
+  // Page changes detach the local lifecycle without falsely failing provider work.
   useEffect(() => {
     return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
+      imageGenerationOwnerRef.current?.abort('Image Studio unmounted');
     };
   }, []);
 
@@ -3527,6 +3468,15 @@ export function ImageStudio() {
     }
     if (!selectedImageModel) {
       toast.error('Please select a model');
+      return;
+    }
+
+    const activeHandle = imageGenerationHandleRef.current;
+    if (
+      activeHandle
+      && ['submitting', 'processing'].includes(activeHandle.getSnapshot().state)
+    ) {
+      toast.info('An image generation is already in progress');
       return;
     }
 
@@ -3588,6 +3538,9 @@ export function ImageStudio() {
       return;
     }
 
+    const owner = new AbortController();
+    imageGenerationOwnerRef.current = owner;
+
     // Auto-enhance prompt if toggle is on
     let basePrompt = currentPrompt.trim();
     if (currentAutoEnhance) {
@@ -3597,6 +3550,7 @@ export function ImageStudio() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ prompt: basePrompt, type: 'enhance' }),
+          signal: owner.signal,
         });
         const enhanceData = await enhanceRes.json();
         if (enhanceData.enhancedPrompt) {
@@ -3604,6 +3558,7 @@ export function ImageStudio() {
           toast.success('Prompt auto-enhanced with AI!');
         }
       } catch {
+        if (owner.signal.aborted) return;
         // If enhancement fails, proceed with original prompt
         toast.info('Auto-enhance failed, using original prompt');
       }
@@ -3712,26 +3667,14 @@ export function ImageStudio() {
     setLatestResult(null);
     setGenerationResults([]);
     setSelectedResultIndex(0);
-    setCurrentJobId(null);
     setGenerationDuration(null);
+
     const generationStartTime = Date.now();
-
-    // Add to generation queue
-    const queueItem: GenerationQueueItem = {
-      id: `img-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      prompt: currentPrompt.trim(),
-      providerName: selectedProviderData?.displayName || selectedImageProvider,
-      providerColor: selectedProviderData?.color || '#888',
-      modelName: imageModels.find((m) => m.modelId === selectedImageModel)?.name || selectedImageModel,
-      status: 'processing',
-      createdAt: Date.now(),
-    };
-    addToQueue(queueItem);
-    queueIdRef.current = queueItem.id;
-
-    const dimensions = RESOLUTION_MAP[currentAspectRatio]?.[currentResolutionTier] ?? RESOLUTION_MAP['1:1']['hd'];
+    const generationId = createGenerationId('img');
+    const dimensions = RESOLUTION_MAP[currentAspectRatio]?.[currentResolutionTier]
+      ?? RESOLUTION_MAP['1:1']['hd'];
     const generation: GenerationDescriptor = {
-      id: queueItem.id,
+      id: generationId,
       providerId: selectedImageProvider,
       providerName: selectedProviderData?.displayName || selectedImageProvider,
       modelId: selectedImageModel,
@@ -3742,137 +3685,184 @@ export function ImageStudio() {
       width: dimensions.width,
       height: dimensions.height,
       params: {
-        aspectRatio: currentAspectRatio, resolutionTier: currentResolutionTier, quality: currentQuality,
-        format: currentFormat, steps: currentSteps, guidance: currentGuidance, seed: currentSeed,
-        batchSize: currentBatchSize, strength: currentStrength, sampler: currentSampler,
-      },
-      createdAt: queueItem.createdAt,
-    };
-    generationRef.current = generation;
-    setGenerationResultIds([]);
-    await beginGeneration(generation);
-
-    try {
-      // Get API key from IndexedDB (BYOK model)
-      const apiKey = await apiKeysHook.getKeyForProvider(selectedImageProvider);
-      if (!apiKey) {
-        const message = 'No API key configured for this provider. Add one in Settings.';
-        await failGeneration(generation, message);
-        updateQueueItem(queueItem.id, { status: 'failed' });
-        queueIdRef.current = null;
-        generationRef.current = null;
-        toast.error(message);
-        setIsImageGenerating(false);
-        return;
-      }
-
-      // Compute provider size from the already-persisted generation dimensions.
-      const computedSize = `${dimensions.width}x${dimensions.height}`;
-
-      const isSDProvider = ['stability', 'replicate', 'fal', 'together', 'fireworks', 'huggingface'].includes(selectedImageProvider);
-
-      const body: Record<string, unknown> = {
-        providerId: selectedImageProvider,
-        modelId: selectedImageModel,
-        prompt: finalPrompt,
-        negativePrompt: finalNegPrompt || undefined,
         aspectRatio: currentAspectRatio,
+        resolutionTier: currentResolutionTier,
         quality: currentQuality,
-        size: computedSize,
-        width: dimensions.width,
-        height: dimensions.height,
-        output_format: currentFormat !== 'png' ? currentFormat : undefined,
+        format: currentFormat,
         steps: currentSteps,
         guidance: currentGuidance,
-        seed: currentSeed ?? undefined,
+        seed: currentSeed,
         batchSize: currentBatchSize,
-        inputImageUrl: currentInputImageUrl || undefined,
-        apiKey,
-        strength: currentInputImageUrl ? currentStrength : undefined,
-        sampler: isSDProvider ? currentSampler : undefined,
-        magicPrompt: selectedImageProvider === 'ideogram' ? currentMagicPrompt : undefined,
-        styleType: (selectedImageProvider === 'ideogram' || (selectedImageProvider === 'openai' && selectedImageModel === 'dall-e-3')) ? currentStyleType : undefined,
-        renderingSpeed: selectedImageProvider === 'ideogram' ? currentRenderingSpeed : undefined,
-        clipGuidance: selectedImageProvider === 'stability' ? currentClipGuidance : undefined,
-        tileable: selectedImageProvider === 'stability' && currentTileable ? true : undefined,
-        photoReal: selectedImageProvider === 'leonardo' && currentPhotoReal ? true : undefined,
-        alchemy: selectedImageProvider === 'leonardo' && currentAlchemy ? true : undefined,
-        safetyFilter: !currentSafetyFilter ? false : undefined,
-        scheduler: isSDProvider ? currentScheduler : undefined,
-        clipSkip: isSDProvider && currentClipSkip > 1 ? currentClipSkip : undefined,
-        lighting: currentLighting !== 'none' ? currentLighting : undefined,
-        colorMood: currentColorMood !== 'none' ? currentColorMood : undefined,
-        cameraShot: currentCameraShot !== 'none' ? currentCameraShot : undefined,
-        hiresFix: isSDProvider && currentHiresFix ? true : undefined,
-        hiresScale: isSDProvider && currentHiresFix ? currentHiresScale : undefined,
-        hiresSteps: isSDProvider && currentHiresFix ? currentHiresSteps : undefined,
-        hiresDenoise: isSDProvider && currentHiresFix ? currentHiresDenoise : undefined,
-        outfitImageUrl: currentOutfitImageUrl || undefined,
-      };
+        strength: currentStrength,
+        sampler: currentSampler,
+      },
+      createdAt: generationStartTime,
+    };
+    setGenerationResultIds([]);
 
-      const res = await fetch('/api/generate/image', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
+    const computedSize = String(dimensions.width) + 'x' + String(dimensions.height);
+    const isSDProvider = [
+      'stability',
+      'replicate',
+      'fal',
+      'together',
+      'fireworks',
+      'huggingface',
+    ].includes(selectedImageProvider);
 
-      const data = await res.json();
+    const body: Record<string, unknown> = {
+      providerId: selectedImageProvider,
+      modelId: selectedImageModel,
+      prompt: finalPrompt,
+      negativePrompt: finalNegPrompt || undefined,
+      aspectRatio: currentAspectRatio,
+      quality: currentQuality,
+      size: computedSize,
+      width: dimensions.width,
+      height: dimensions.height,
+      output_format: currentFormat !== 'png' ? currentFormat : undefined,
+      steps: currentSteps,
+      guidance: currentGuidance,
+      seed: currentSeed ?? undefined,
+      batchSize: currentBatchSize,
+      inputImageUrl: currentInputImageUrl || undefined,
+      strength: currentInputImageUrl ? currentStrength : undefined,
+      sampler: isSDProvider ? currentSampler : undefined,
+      magicPrompt: selectedImageProvider === 'ideogram' ? currentMagicPrompt : undefined,
+      styleType:
+        selectedImageProvider === 'ideogram'
+        || (selectedImageProvider === 'openai' && selectedImageModel === 'dall-e-3')
+          ? currentStyleType
+          : undefined,
+      renderingSpeed:
+        selectedImageProvider === 'ideogram' ? currentRenderingSpeed : undefined,
+      clipGuidance:
+        selectedImageProvider === 'stability' ? currentClipGuidance : undefined,
+      tileable:
+        selectedImageProvider === 'stability' && currentTileable ? true : undefined,
+      photoReal:
+        selectedImageProvider === 'leonardo' && currentPhotoReal ? true : undefined,
+      alchemy:
+        selectedImageProvider === 'leonardo' && currentAlchemy ? true : undefined,
+      safetyFilter: !currentSafetyFilter ? false : undefined,
+      scheduler: isSDProvider ? currentScheduler : undefined,
+      clipSkip: isSDProvider && currentClipSkip > 1 ? currentClipSkip : undefined,
+      lighting: currentLighting !== 'none' ? currentLighting : undefined,
+      colorMood: currentColorMood !== 'none' ? currentColorMood : undefined,
+      cameraShot: currentCameraShot !== 'none' ? currentCameraShot : undefined,
+      hiresFix: isSDProvider && currentHiresFix ? true : undefined,
+      hiresScale:
+        isSDProvider && currentHiresFix ? currentHiresScale : undefined,
+      hiresSteps:
+        isSDProvider && currentHiresFix ? currentHiresSteps : undefined,
+      hiresDenoise:
+        isSDProvider && currentHiresFix ? currentHiresDenoise : undefined,
+      outfitImageUrl: currentOutfitImageUrl || undefined,
+    };
 
-      if (!res.ok) {
-        throw new Error(data.error || 'Generation failed');
-      }
+    const handle = startGenerationJob({
+      descriptor: generation,
+      endpoint: '/api/generate/image',
+      body,
+      queue: {
+        port: {
+          add: addToQueue,
+          update: updateQueueItem,
+        },
+        metadata: {
+          prompt: currentPrompt.trim(),
+          providerName:
+            selectedProviderData?.displayName || selectedImageProvider,
+          providerColor: selectedProviderData?.color || '#888',
+          modelName:
+            imageModels.find((model) => model.modelId === selectedImageModel)?.name
+            || selectedImageModel,
+        },
+      },
+      signal: owner.signal,
+      pollPolicy: {
+        maxElapsedMs: 30 * 60 * 1000,
+        maxConsecutiveErrors: 6,
+      },
+    });
+    imageGenerationHandleRef.current = handle;
 
-      if (data.status === 'completed' && data.urls) {
-        // Immediate result
-        setLatestResult(data.urls[0] || null);
-        setGenerationResults(data.urls);
-        setSelectedResultIndex(0);
-        setIsImageGenerating(false);
-        setGenerationDuration((Date.now() - generationStartTime) / 1000);
-        const ids = await completeGeneration(generation, data.urls);
-        setGenerationResultIds(ids);
-        if (queueIdRef.current) updateQueueItem(queueIdRef.current, { status: 'completed', resultUrl: data.urls[0] || undefined });
-        queueIdRef.current = null;
-        generationRef.current = null;
-        toast.success(data.urls.length > 1 ? `${data.urls.length} images generated successfully!` : 'Image generated successfully!');
-      } else if (data.status === 'processing' && data.id) {
-        // Async – start polling
-        setCurrentJobId(data.id);
-        await markGenerationProcessing(generation, data.id);
-        startPolling(data.id);
+    let processingNotified = false;
+    const unsubscribe = handle.subscribe((snapshot) => {
+      if (
+        !owner.signal.aborted
+        && snapshot.state === 'processing'
+        && !processingNotified
+      ) {
+        processingNotified = true;
         toast.info('Generation in progress…');
-      } else {
-        const message = 'Unexpected response from server';
-        await failGeneration(generation, message);
-        setIsImageGenerating(false);
-        if (queueIdRef.current) updateQueueItem(queueIdRef.current, { status: 'failed' });
-        queueIdRef.current = null;
-        generationRef.current = null;
-        toast.error(message);
       }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Generation failed';
-      await failGeneration(generation, message);
-      setIsImageGenerating(false);
-      if (queueIdRef.current) updateQueueItem(queueIdRef.current, { status: 'failed' });
-      queueIdRef.current = null;
-      generationRef.current = null;
-      toast.error(message);
+    });
+
+    try {
+      const result = await handle.result;
+      if (owner.signal.aborted) return;
+
+      setLatestResult(result.urls[0] || null);
+      setGenerationResults(result.urls);
+      setGenerationResultIds(result.generationIds);
+      setSelectedResultIndex(0);
+      setGenerationDuration(result.durationMs / 1000);
+      toast.success(
+        result.urls.length > 1
+          ? String(result.urls.length) + ' images generated successfully!'
+          : 'Image generated successfully!',
+      );
+    } catch (error) {
+      if (owner.signal.aborted) return;
+      if (
+        error instanceof GenerationLifecycleError
+        && (error.code === 'detached' || error.code === 'cancelled')
+      ) {
+        return;
+      }
+      toast.error(error instanceof Error ? error.message : 'Generation failed');
+    } finally {
+      unsubscribe();
+      if (imageGenerationHandleRef.current === handle) {
+        imageGenerationHandleRef.current = null;
+      }
+      if (imageGenerationOwnerRef.current === owner) {
+        imageGenerationOwnerRef.current = null;
+      }
+      if (!owner.signal.aborted) setIsImageGenerating(false);
     }
   }, [
     selectedImageProvider,
     selectedImageModel,
     hasApiKey,
-    apiKeysHook,
     activeStylePreset,
     selectedProviderData,
     imageModels,
     setIsImageGenerating,
     setLatestResult,
-    startPolling,
+    setGenerationResults,
+    setSelectedResultIndex,
+    setGenerationDuration,
+    addPromptToHistory,
     addToQueue,
     updateQueueItem,
   ]);
+
+  const handleCancelImageGeneration = useCallback(async () => {
+    const handle = imageGenerationHandleRef.current;
+    const owner = imageGenerationOwnerRef.current;
+
+    if (handle) {
+      await handle.cancel('Image generation cancelled by user');
+    } else {
+      owner?.abort('Image generation cancelled by user');
+    }
+
+    setIsImageGenerating(false);
+    setGenerationDuration(null);
+    toast.info('Image generation cancelled');
+  }, [setIsImageGenerating, setGenerationDuration]);
 
   // Keyboard shortcut: generate on trigger
   useEffect(() => {
@@ -4481,6 +4471,17 @@ export function ImageStudio() {
                     <Clock className="h-3 w-3" />
                     <span>{genElapsed}s elapsed</span>
                   </div>
+
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleCancelImageGeneration}
+                    className="border-border/60 bg-surface/80 text-muted-foreground hover:border-destructive/40 hover:bg-destructive/10 hover:text-destructive"
+                  >
+                    <X className="mr-1.5 h-3.5 w-3.5" />
+                    Cancel generation
+                  </Button>
                 </div>
               </motion.div>
             )}
