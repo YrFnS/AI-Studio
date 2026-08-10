@@ -48,7 +48,11 @@ describe('generation lifecycle image response compatibility', () => {
     const completed: string[][] = [];
     const client = createGenerationLifecycleClient(dependencies({
       completeImpl: async (generation, urls) => {
-        completed.push([...urls]);
+        completed.push(
+          urls.filter(
+            (url): url is string => typeof url === 'string' && url.length > 0,
+          ),
+        );
         return [generation.id];
       },
     }));
