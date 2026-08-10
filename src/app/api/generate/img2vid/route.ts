@@ -1,10 +1,15 @@
 import { NextRequest, NextResponse } from 'next/server';
+
 import { encodeGenerationJobToken } from '@/lib/generation-job';
 import { PROVIDERS } from '@/lib/providers-data';
+import {
+  GenerationRegistryError,
+  requireModelOperation,
+} from '@/lib/generation-registry';
 
 export const runtime = 'nodejs';
 
-async function getProviderById(id: string) {
+function getProviderById(id: string) {
   return PROVIDERS.find((provider) => provider.id === id);
 }
 
@@ -26,32 +31,14 @@ function runwayRatio(aspectRatio?: string): string {
   return ratios[aspectRatio || '16:9'] || '1280:720';
 }
 
-function resolveRunwayModel(modelId?: string): string {
-  return modelId === 'gen4.5' || modelId === 'gen4_turbo'
-    ? modelId
-    : 'gen4_turbo';
-}
-
-function resolveLumaModel(modelId?: string): string {
-  return modelId === 'ray-flash-2' || modelId === 'ray-2'
-    ? modelId
-    : 'ray-2';
-}
-
-function resolveFalModel(modelId?: string): string {
-  const normalized = modelId?.toLowerCase() || '';
-  const looksLikeVideoModel = [
-    'video',
-    'seedance',
-    'kling',
-    'wan',
-    'veo',
-    'pika',
-  ].some((part) => normalized.includes(part));
-
-  return looksLikeVideoModel && modelId
-    ? modelId
-    : 'bytedance/seedance-2.0/image-to-video';
+function resolveFalImageToVideoEndpoint(modelId: string): string {
+  if (modelId === 'bytedance/seedance-2.0/text-to-video') {
+    return 'bytedance/seedance-2.0/image-to-video';
+  }
+  if (modelId === 'bytedance/seedance-2.0/fast/text-to-video') {
+    return 'bytedance/seedance-2.0/fast/image-to-video';
+  }
+  return modelId;
 }
 
 async function img2vidRunway(
@@ -142,7 +129,7 @@ async function img2vidLuma(
 async function img2vidFal(
   params: {
     prompt: string;
-    model: string;
+    endpoint: string;
     imageUrl: string;
     duration: number;
     aspectRatio?: string;
@@ -156,12 +143,12 @@ async function img2vidFal(
     aspect_ratio: params.aspectRatio || '16:9',
   };
 
-  if (params.model.includes('seedance-2.0')) {
+  if (params.endpoint.includes('seedance-2.0')) {
     body.resolution = '720p';
     body.generate_audio = true;
   }
 
-  const response = await fetch(`https://queue.fal.run/${params.model}`, {
+  const response = await fetch(`https://queue.fal.run/${params.endpoint}`, {
     method: 'POST',
     headers: {
       Authorization: `Key ${apiKey}`,
@@ -200,57 +187,68 @@ export async function POST(req: NextRequest) {
       aspectRatio?: string;
     };
 
-    if (!providerId || !imageUrl || !prompt) {
-      return json({ error: 'providerId, imageUrl, and prompt are required' }, 400);
+    if (!providerId || !modelId || !imageUrl || !prompt) {
+      return json({
+        error: 'providerId, modelId, imageUrl, and prompt are required',
+      }, 400);
     }
     if (!apiKey) return json({ error: 'API key is required' }, 400);
 
-    const provider = await getProviderById(providerId);
+    const provider = getProviderById(providerId);
     if (!provider) return json({ error: 'Provider not found' }, 404);
 
+    requireModelOperation(
+      provider.name,
+      modelId,
+      'image-to-video',
+      'img2vid',
+    );
+
     const videoDuration = Math.max(3, Math.min(10, duration || 5));
-    let effectiveModelId: string;
+    let pollingModelId = modelId;
     let result: { jobId: string; status: 'processing' };
 
     switch (provider.name) {
       case 'runway':
-        effectiveModelId = resolveRunwayModel(modelId);
         result = await img2vidRunway({
           prompt,
-          model: effectiveModelId,
+          model: modelId,
           duration: videoDuration,
           imageUrl,
           aspectRatio,
         }, apiKey);
         break;
       case 'luma':
-        effectiveModelId = resolveLumaModel(modelId);
         result = await img2vidLuma({
           prompt,
           imageUrl,
           aspectRatio,
-          model: effectiveModelId,
+          model: modelId,
           duration: videoDuration,
         }, apiKey);
         break;
-      case 'fal':
-        effectiveModelId = resolveFalModel(modelId);
+      case 'fal': {
+        const endpoint = resolveFalImageToVideoEndpoint(modelId);
+        pollingModelId = endpoint;
         result = await img2vidFal({
           prompt,
-          model: effectiveModelId,
+          endpoint,
           imageUrl,
           duration: videoDuration,
           aspectRatio,
         }, apiKey);
         break;
+      }
       default:
-        throw new Error(`Image-to-video is not supported for provider: ${provider.displayName}`);
+        return json({
+          error: `No registered image-to-video adapter is available for ${provider.displayName}.`,
+        }, 400);
     }
 
     const localJobId = encodeGenerationJobToken({
       providerId: provider.name,
       jobId: result.jobId,
-      modelId: effectiveModelId,
+      modelId: pollingModelId,
       kind: 'video',
     });
 
@@ -262,6 +260,10 @@ export async function POST(req: NextRequest) {
       message: 'Image-to-video generation in progress. Poll /api/generate/status for results.',
     });
   } catch (error) {
+    if (error instanceof GenerationRegistryError) {
+      return json({ error: error.message, code: error.code }, error.status);
+    }
+
     console.error('img2vid error:', error);
     return json({
       error: error instanceof Error ? error.message : 'Failed to generate video from image',
