@@ -1,3 +1,8 @@
+import type {
+  GenerationOperationId,
+  ModelOperationContract,
+} from '@/lib/generation-registry';
+
 // ---------------------------------------------------------------------------
 // Shared types for the Image Studio feature
 // ---------------------------------------------------------------------------
@@ -8,6 +13,8 @@ export interface ProviderModel {
   modelId: string;
   type: string;
   capabilities: string;
+  operations?: readonly GenerationOperationId[];
+  operationContracts?: readonly ModelOperationContract[];
   description?: string;
   priceInfo?: string;
   isDefault: boolean;
@@ -20,6 +27,7 @@ export interface Provider {
   description?: string;
   color?: string;
   icon?: string;
+  operations?: readonly GenerationOperationId[];
   models: ProviderModel[];
 }
 
