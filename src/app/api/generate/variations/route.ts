@@ -1,11 +1,18 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 
 import { PROVIDERS } from '@/lib/providers-data';
-import { resolveImageBlob } from '@/lib/server/image-input';
+import { requireModelOperation } from '@/lib/generation-registry';
 import {
-  GenerationRegistryError,
-  requireModelOperation,
-} from '@/lib/generation-registry';
+  MAX_SINGLE_IMAGE_REQUEST_BYTES,
+  parseGenerationRequest,
+  variationGenerationRequestSchema,
+} from '@/lib/server/generation-request';
+import {
+  generationErrorResponse,
+  noStoreJson,
+} from '@/lib/server/generation-response';
+import { resolveImageBlob } from '@/lib/server/image-input';
+import { providerFetch as fetch } from '@/lib/server/provider-request';
 
 export const runtime = 'nodejs';
 
@@ -17,13 +24,6 @@ const STABILITY_MODEL_IDS: Record<string, string> = {
 
 function getProviderById(id: string) {
   return PROVIDERS.find((provider) => provider.id === id);
-}
-
-function json(payload: Record<string, unknown>, status = 200) {
-  return NextResponse.json(payload, {
-    status,
-    headers: { 'Cache-Control': 'no-store' },
-  });
 }
 
 async function variationStability(
@@ -54,7 +54,7 @@ async function variationStability(
   formData.append('model', providerModel);
   formData.append('strength', params.variationStrength.toString());
   formData.append('output_format', 'png');
-  if (params.seed) formData.append('seed', params.seed.toString());
+  if (params.seed !== undefined) formData.append('seed', params.seed.toString());
 
   const response = await fetch(
     `${providerBaseUrl}/v2beta/stable-image/generate/sd3`,
@@ -67,10 +67,6 @@ async function variationStability(
       body: formData,
     },
   );
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Stability Variation API error: ${response.status} - ${error}`);
-  }
 
   const buffer = await response.arrayBuffer();
   return [`data:image/png;base64,${Buffer.from(buffer).toString('base64')}`];
@@ -93,10 +89,6 @@ async function variationOpenAI(
     headers: { Authorization: `Bearer ${apiKey}` },
     body: formData,
   });
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`OpenAI Variation API error: ${response.status} - ${error}`);
-  }
 
   const data = await response.json();
   return (data.data || []).map((image: { url?: string; b64_json?: string }) => (
@@ -106,7 +98,6 @@ async function variationOpenAI(
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
     const {
       providerId,
       modelId,
@@ -116,39 +107,30 @@ export async function POST(req: NextRequest) {
       apiKey,
       variationStrength,
       seed,
-    } = body as {
-      providerId?: string;
-      modelId?: string;
-      imageUrl?: string;
-      prompt?: string;
-      negativePrompt?: string;
-      apiKey?: string;
-      variationStrength?: number;
-      seed?: number;
-    };
-
-    if (!providerId || !modelId || !imageUrl || !prompt) {
-      return json({
-        error: 'providerId, modelId, imageUrl, and prompt are required',
-      }, 400);
-    }
-    if (!apiKey) return json({ error: 'API key is required' }, 400);
+    } = await parseGenerationRequest(
+      req,
+      variationGenerationRequestSchema,
+      MAX_SINGLE_IMAGE_REQUEST_BYTES,
+    );
 
     const provider = getProviderById(providerId);
-    if (!provider) return json({ error: 'Provider not found' }, 404);
+    if (!provider) {
+      return noStoreJson({
+        error: 'Provider not found',
+        code: 'provider_not_found',
+      }, 404);
+    }
 
     requireModelOperation(provider.name, modelId, 'variation', 'variations');
 
-    const strength = Math.max(0.3, Math.min(1, variationStrength ?? 0.7));
     let urls: string[];
-
     switch (provider.name) {
       case 'stability':
         urls = await variationStability({
           imageUrl,
           prompt,
           negativePrompt,
-          variationStrength: strength,
+          variationStrength,
           modelId,
           seed,
         }, apiKey, provider.baseUrl);
@@ -157,20 +139,17 @@ export async function POST(req: NextRequest) {
         urls = await variationOpenAI({ imageUrl, prompt, modelId }, apiKey, provider.baseUrl);
         break;
       default:
-        return json({
+        return noStoreJson({
           error: `No registered variation adapter is available for ${provider.displayName}.`,
+          code: 'adapter_not_configured',
         }, 400);
     }
 
-    return json({ status: 'completed', urls });
+    return noStoreJson({ status: 'completed', urls });
   } catch (error) {
-    if (error instanceof GenerationRegistryError) {
-      return json({ error: error.message, code: error.code }, error.status);
-    }
-
-    console.error('Variation image error:', error);
-    return json({
-      error: error instanceof Error ? error.message : 'Failed to create variation',
-    }, 500);
+    return generationErrorResponse(error, {
+      logLabel: 'Variation image error',
+      fallbackMessage: 'Failed to create variation',
+    });
   }
 }
