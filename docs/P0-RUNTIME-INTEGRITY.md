@@ -36,6 +36,7 @@ Make generation submission, polling, persistence, recovery, and cancellation det
 - Page aborts detach ownership without falsely failing provider work, allowing IndexedDB recovery.
 - Missing keys during recovery can remain non-terminal and recoverable.
 - Transport, polling, persistence, key lookup, queue behavior, time, and cancellation are injectable for deterministic tests.
+- Immediate edit responses using an `images` array are normalized into the same result contract as `urls` and `resultUrl` responses.
 
 ### Model Compare migration
 
@@ -79,6 +80,21 @@ Make generation submission, polling, persistence, recovery, and cancellation det
 - Fixed the duplicated scene-preset prompt bug: `buildCinemaSuffix` remains the single place that appends the selected scene preset.
 - Added `cinema-studio-lifecycle.test.ts`, including scene-suffix regression coverage.
 
+### Image editing and derived-action migration
+
+- Added `src/lib/generation-operation.ts` as a typed operation planner for edit, inpaint, upscale, variation, improve, and image-to-video actions.
+- The planner resolves a compatible provider/model/operation target before submission and builds the dedicated route contract for that operation.
+- Derived request bodies remain credential-free; the explicit client injects the selected provider key only for the local route call.
+- Image-to-video no longer blindly sends the active image model to a video endpoint. It selects a connected provider with a declared `i2v` video model and reports the selected target to the user.
+- Image Studio post-generation actions now use lifecycle handles for submission, polling, queue updates, persistence, cancellation, and page detachment.
+- Upscale, variation, and improve use their dedicated routes rather than the generic text-to-image route.
+- The Image Editor and Editor Controls Panel share `use-editor-generation.ts`; neither maintains a local polling loop or places provider keys in status URLs.
+- Editor actions stay on the explicitly selected provider and may choose a compatible model within that provider. They do not silently bill a different provider.
+- Editor and derived results preserve parent-generation relationships and return durable Gallery IDs.
+- The edit route now rejects unsupported providers instead of sending them an OpenAI-shaped payload.
+- Removed the unused legacy `use-image-generate.ts` hook, which still contained component-owned polling, manual queue state, and API-key query parameters.
+- Added visible cancellation controls for editor and post-generation operations.
+
 ### Stateless asynchronous jobs
 
 - Image, video, upscale, variation, and image-to-video routes return credential-free `aistudio-job.*` tokens.
@@ -114,16 +130,18 @@ Automated coverage now includes:
 - Polling recovery, backoff, retry exhaustion, cancellation, and deadlines.
 - Explicit-client key injection and pass-through behavior.
 - Lifecycle immediate completion, async polling, queue ownership, failures, snapshots, cancellation, and missing-key recovery.
-- Source-level migration guards for Image Studio, Video Studio, and Cinema Studio.
+- Dedicated edit-response persistence through the lifecycle.
+- Operation-compatible model resolution and image-to-video provider selection.
+- Source-level migration guards for Image Studio, Video Studio, Cinema Studio, both editor surfaces, and post-generation actions.
+- Prevention of API keys in editor status URLs and prevention of generic-image upscale/variation calls.
+- Unsupported edit-provider rejection.
 - Prevention of the duplicate Cinema scene suffix.
 
 ## Remaining P0 work
 
-### Lifecycle consolidation
+### Cancellation and recovery experience
 
-- Move image editing and post-generation actions—upscale, variation, improve, and image-to-video—onto lifecycle handles.
-- Remove their duplicated submission, polling, persistence, and timer code.
-- Add provider-side cancellation adapters where provider APIs support cancellation. Current studio cancellation is local lifecycle cancellation.
+- Add provider-side cancellation adapters where provider APIs support cancellation. Current controls stop the local lifecycle and persist a terminal cancellation, but may not stop provider execution or billing.
 - Add a visible recovery state for jobs waiting on a missing provider key.
 
 ### Protected media
@@ -132,11 +150,12 @@ Automated coverage now includes:
 - Persist or stream completed media without exposing provider credentials.
 - Define expiry and recovery behavior for protected media links.
 
-### Typed provider operation registry
+### Full typed provider operation registry
 
-- Replace provider-wide capability flags with a typed `provider + model + operation` registry.
+- Promote the operation planner into the authoritative `provider + model + operation` registry for every generation route and selector.
 - Hide every model/operation combination without an executable and tested adapter.
-- Separate text-to-image, image-to-image, edit, inpaint, variation, upscale, text-to-video, and image-to-video contracts.
+- Add adapter verification metadata and separate text-to-image, image-to-image, edit, inpaint, variation, upscale, text-to-video, and image-to-video contracts.
+- Remove the remaining provider-wide capability heuristics once every caller consumes the registry.
 
 ### Input and network safety
 
@@ -151,7 +170,6 @@ Automated coverage now includes:
 - Correct the API-key privacy copy in Settings.
 - Fix queue `clearCompleted` so it preserves pending work.
 - Make Gallery search cover all IndexedDB records rather than only the loaded page.
-- Give post-generation actions an operation-compatible provider/model selector.
 
 ## Completion gates
 
