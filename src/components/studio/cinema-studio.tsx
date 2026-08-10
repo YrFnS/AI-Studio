@@ -1,6 +1,12 @@
 'use client';
 
 import { generationFetch as fetch } from '@/lib/generation-client';
+import {
+  GenerationLifecycleError,
+  startGenerationJob,
+  type GenerationJobHandle,
+} from '@/lib/generation-lifecycle';
+
 
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { getAllCustomModels } from '@/lib/idb';
@@ -29,8 +35,7 @@ import {
 
 import { useAppStore } from '@/lib/store';
 import * as data from '@/lib/data';
-import { beginGeneration, completeGeneration, failGeneration, markGenerationProcessing, type GenerationDescriptor } from '@/lib/generation-persistence';
-import type { GenerationQueueItem } from '@/lib/store';
+import { createGenerationId, type GenerationDescriptor } from '@/lib/generation-persistence';
 import { useApiKeys } from '@/hooks/use-api-keys';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -903,16 +908,14 @@ export function CinemaStudio() {
   const [batchSize, setBatchSize] = useState(1);
   const [showNegPrompt, setShowNegPrompt] = useState(false);
 
-  const [currentJobId, setCurrentJobId] = useState<string | null>(null);
   const [latestGenerationId, setLatestGenerationId] = useState<string | null>(null);
-  const generationRef = useRef<GenerationDescriptor | null>(null);
+  const cinemaGenerationHandleRef = useRef<GenerationJobHandle | null>(null);
+  const cinemaGenerationOwnerRef = useRef<AbortController | null>(null);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [showGenInfo, setShowGenInfo] = useState(true);
   const [genStartTime, setGenStartTime] = useState<number | null>(null);
   const [genElapsed, setGenElapsed] = useState(0);
   const [genMsgIndex, setGenMsgIndex] = useState(0);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const queueIdRef = useRef<string | null>(null);
   const isMobile = useIsMobile();
 
   // Derived
@@ -994,63 +997,10 @@ export function CinemaStudio() {
 
 
 
-  // Polling logic — API keys stay in the POST body, never in the URL.
-  const startPolling = useCallback(
-    (providerJobId: string) => {
-      if (pollRef.current) clearInterval(pollRef.current);
-
-      pollRef.current = setInterval(async () => {
-        try {
-          const apiKey = await apiKeysHook.getKeyForProvider(selectedProvider);
-          if (!apiKey) throw new Error('API key is no longer available');
-          const res = await fetch('/api/generate/status', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ id: providerJobId, apiKey, provider: selectedProvider, modelId: selectedModel }),
-          });
-          const statusData = await res.json();
-          if (!res.ok) throw new Error(statusData.error || 'Status check failed');
-
-          if (statusData.status === 'completed') {
-            const urls = statusData.urls || (statusData.resultUrl ? [statusData.resultUrl] : []);
-            const descriptor = generationRef.current;
-            if (descriptor) {
-              const ids = await completeGeneration(descriptor, urls, providerJobId);
-              setLatestGenerationId(ids[0] || null);
-            }
-            setIsCinemaGenerating(false);
-            setLatestResult(urls[0] || null);
-            setCurrentJobId(null);
-            if (queueIdRef.current) updateQueueItem(queueIdRef.current, { status: 'completed', resultUrl: urls[0] || undefined });
-            queueIdRef.current = null;
-            generationRef.current = null;
-            if (pollRef.current) clearInterval(pollRef.current);
-            pollRef.current = null;
-            toast.success('Cinematic image generated successfully!');
-          } else if (statusData.status === 'failed') {
-            const descriptor = generationRef.current;
-            if (descriptor) await failGeneration(descriptor, statusData.error || 'Generation failed', providerJobId);
-            setIsCinemaGenerating(false);
-            setCurrentJobId(null);
-            if (queueIdRef.current) updateQueueItem(queueIdRef.current, { status: 'failed' });
-            queueIdRef.current = null;
-            generationRef.current = null;
-            if (pollRef.current) clearInterval(pollRef.current);
-            pollRef.current = null;
-            toast.error(statusData.error || 'Generation failed');
-          }
-        } catch (error) {
-          console.error('Cinema status polling failed', error);
-        }
-      }, 3000);
-    },
-    [setIsCinemaGenerating, setLatestResult, updateQueueItem, apiKeysHook, selectedProvider, selectedModel]
-  );
-
-  // Cleanup polling on unmount
+  // Page changes detach local ownership without falsely failing provider work.
   useEffect(() => {
     return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
+      cinemaGenerationOwnerRef.current?.abort('Cinema Studio unmounted');
     };
   }, []);
 
@@ -1108,102 +1058,130 @@ export function CinemaStudio() {
       return;
     }
 
-    // Read fresh state from store to avoid stale closures
-    const freshState = useAppStore.getState();
-    const freshScenePreset = CINEMA_SCENE_PRESETS.find((s) => s.id === freshState.cinemaScenePreset);
-    const sceneSuffix = freshScenePreset ? freshScenePreset.suffix : '';
+    const activeHandle = cinemaGenerationHandleRef.current;
+    if (
+      activeHandle
+      && ['submitting', 'processing'].includes(activeHandle.getSnapshot().state)
+    ) {
+      toast.info('A cinema generation is already in progress');
+      return;
+    }
 
-    // Combine user prompt with cinema suffix + scene preset suffix
-    const finalPrompt = `${prompt.trim()}, ${cinemaSuffix}${sceneSuffix}`;
+    const owner = new AbortController();
+    cinemaGenerationOwnerRef.current = owner;
+
+    // buildCinemaSuffix already includes the active scene preset. Appending it
+    // again here previously duplicated the scene direction in provider prompts.
+    const finalPrompt = cinemaSuffix.length > 0
+      ? prompt.trim() + ', ' + cinemaSuffix
+      : prompt.trim();
 
     setIsCinemaGenerating(true);
     setLatestResult(null);
-    setCurrentJobId(null);
+    setLatestGenerationId(null);
+    setShowGenInfo(true);
 
-    // Add to generation queue
-    const queueItem: GenerationQueueItem = {
-      id: `cin-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      prompt: prompt.trim(),
-      providerName: selectedProviderData?.displayName || selectedProvider,
-      providerColor: selectedProviderData?.color || '#F59E0B',
-      modelName: imageModels.find((m) => m.modelId === selectedModel)?.name || selectedModel,
-      status: 'processing',
-      createdAt: Date.now(),
-    };
-    addToQueue(queueItem);
-    queueIdRef.current = queueItem.id;
-
+    const generationStartTime = Date.now();
     const generation: GenerationDescriptor = {
-      id: queueItem.id,
+      id: createGenerationId('cin'),
       providerId: selectedProvider,
       providerName: selectedProviderData?.displayName || selectedProvider,
       modelId: selectedModel,
       type: 'image',
       prompt: finalPrompt,
       negativePrompt: negativePrompt.trim() || undefined,
-      params: { aspectRatio, batchSize, camera: cinemaCamera, lens: cinemaLens, focalLength: cinemaFocalLength, aperture: cinemaAperture, filmStock: cinemaFilmStock, colorGrade: cinemaColorGrade, lighting: cinemaLighting, scenePreset: cinemaScenePreset },
-      createdAt: queueItem.createdAt,
-    };
-    generationRef.current = generation;
-    setLatestGenerationId(null);
-    await beginGeneration(generation);
-
-    try {
-      const apiKey = await apiKeysHook.getKeyForProvider(selectedProvider);
-      if (!apiKey) throw new Error('No API key configured for this provider. Add one in Settings.');
-      const body: Record<string, unknown> = {
-        providerId: selectedProvider,
-        modelId: selectedModel,
-        prompt: finalPrompt,
-        negativePrompt: negativePrompt.trim() || undefined,
+      params: {
         aspectRatio,
         batchSize,
-        apiKey,
-      };
+        camera: cinemaCamera,
+        lens: cinemaLens,
+        focalLength: cinemaFocalLength,
+        aperture: cinemaAperture,
+        filmStock: cinemaFilmStock,
+        colorGrade: cinemaColorGrade,
+        lighting: cinemaLighting,
+        scenePreset: cinemaScenePreset,
+      },
+      createdAt: generationStartTime,
+    };
 
-      const res = await fetch('/api/generate/image', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
+    const body: Record<string, unknown> = {
+      providerId: selectedProvider,
+      modelId: selectedModel,
+      prompt: finalPrompt,
+      negativePrompt: negativePrompt.trim() || undefined,
+      aspectRatio,
+      batchSize,
+    };
 
-      const data = await res.json();
+    const handle = startGenerationJob({
+      descriptor: generation,
+      endpoint: '/api/generate/image',
+      body,
+      queue: {
+        port: {
+          add: addToQueue,
+          update: updateQueueItem,
+        },
+        metadata: {
+          prompt: prompt.trim(),
+          providerName: selectedProviderData?.displayName || selectedProvider,
+          providerColor: selectedProviderData?.color || '#F59E0B',
+          modelName:
+            imageModels.find((model) => model.modelId === selectedModel)?.name
+            || selectedModel,
+        },
+      },
+      signal: owner.signal,
+      pollPolicy: {
+        maxElapsedMs: 30 * 60 * 1000,
+        maxConsecutiveErrors: 6,
+      },
+    });
+    cinemaGenerationHandleRef.current = handle;
 
-      if (!res.ok) {
-        throw new Error(data.error || 'Generation failed');
+    let processingNotified = false;
+    const unsubscribe = handle.subscribe((snapshot) => {
+      if (
+        !owner.signal.aborted
+        && snapshot.state === 'processing'
+        && !processingNotified
+      ) {
+        processingNotified = true;
+        toast.info('Cinema generation in progress…');
       }
+    });
 
-      if (data.status === 'completed' && data.urls) {
-        setLatestResult(data.urls[0] || null);
-        setIsCinemaGenerating(false);
-        const ids = await completeGeneration(generation, data.urls);
-        setLatestGenerationId(ids[0] || null);
-        if (queueIdRef.current) updateQueueItem(queueIdRef.current, { status: 'completed', resultUrl: data.urls[0] || undefined });
-        queueIdRef.current = null;
-        generationRef.current = null;
-        toast.success('Cinematic image generated successfully!');
-      } else if (data.status === 'processing' && data.id) {
-        setCurrentJobId(data.id);
-        await markGenerationProcessing(generation, data.id);
-        startPolling(data.id);
-        toast.info('Generation in progress...');
-      } else {
-        const message = 'Unexpected response from server';
-        await failGeneration(generation, message);
-        setIsCinemaGenerating(false);
-        if (queueIdRef.current) updateQueueItem(queueIdRef.current, { status: 'failed' });
-        queueIdRef.current = null;
-        generationRef.current = null;
-        toast.error(message);
+    try {
+      const result = await handle.result;
+      if (owner.signal.aborted) return;
+
+      setLatestResult(result.urls[0] || null);
+      setLatestGenerationId(result.generationIds[0] || null);
+      setShowGenInfo(true);
+      toast.success(
+        result.urls.length > 1
+          ? String(result.urls.length) + ' cinematic images generated successfully!'
+          : 'Cinematic image generated successfully!',
+      );
+    } catch (error) {
+      if (owner.signal.aborted) return;
+      if (
+        error instanceof GenerationLifecycleError
+        && (error.code === 'detached' || error.code === 'cancelled')
+      ) {
+        return;
       }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Generation failed';
-      await failGeneration(generation, message);
-      setIsCinemaGenerating(false);
-      if (queueIdRef.current) updateQueueItem(queueIdRef.current, { status: 'failed' });
-      queueIdRef.current = null;
-      generationRef.current = null;
-      toast.error(message);
+      toast.error(error instanceof Error ? error.message : 'Generation failed');
+    } finally {
+      unsubscribe();
+      if (cinemaGenerationHandleRef.current === handle) {
+        cinemaGenerationHandleRef.current = null;
+      }
+      if (cinemaGenerationOwnerRef.current === owner) {
+        cinemaGenerationOwnerRef.current = null;
+      }
+      if (!owner.signal.aborted) setIsCinemaGenerating(false);
     }
   }, [
     selectedProvider,
@@ -1214,15 +1192,35 @@ export function CinemaStudio() {
     batchSize,
     hasApiKey,
     cinemaSuffix,
-    setIsCinemaGenerating,
-    setLatestResult,
-    startPolling,
-    addToQueue,
-    updateQueueItem,
+    cinemaCamera,
+    cinemaLens,
+    cinemaFocalLength,
+    cinemaAperture,
+    cinemaFilmStock,
+    cinemaColorGrade,
+    cinemaLighting,
+    cinemaScenePreset,
     selectedProviderData,
     imageModels,
-    apiKeysHook,
+    setIsCinemaGenerating,
+    setLatestResult,
+    addToQueue,
+    updateQueueItem,
   ]);
+
+  const handleCancelCinemaGeneration = useCallback(async () => {
+    const handle = cinemaGenerationHandleRef.current;
+    const owner = cinemaGenerationOwnerRef.current;
+
+    if (handle) {
+      await handle.cancel('Cinema generation cancelled by user');
+    } else {
+      owner?.abort('Cinema generation cancelled by user');
+    }
+
+    setIsCinemaGenerating(false);
+    toast.info('Cinema generation cancelled');
+  }, [setIsCinemaGenerating]);
 
   // Keyboard shortcut: generate on trigger
   useEffect(() => {
@@ -1484,6 +1482,20 @@ export function CinemaStudio() {
                     <Clock className="h-3 w-3" />
                     <span>{genElapsed}s elapsed</span>
                   </div>
+
+                  <p className="text-[10px] text-muted-foreground/60">
+                    The job remains recoverable if you navigate away or restart the local app.
+                  </p>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleCancelCinemaGeneration}
+                    className="border-border/60 bg-surface/80 text-muted-foreground hover:border-destructive/40 hover:bg-destructive/10 hover:text-destructive"
+                  >
+                    <X className="mr-1.5 h-3.5 w-3.5" />
+                    Cancel generation
+                  </Button>
                 </div>
               </motion.div>
             )}
