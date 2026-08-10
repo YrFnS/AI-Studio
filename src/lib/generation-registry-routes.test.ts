@@ -72,4 +72,30 @@ describe('generation route registry enforcement', () => {
     expect(variations).not.toContain('variationReplicate');
     expect(variations).not.toContain('variationFal');
   });
+
+  test('provider adapters use executable model-specific contracts', async () => {
+    const handlers = await source('src/app/api/generate/handlers.ts');
+    const video = await source('src/app/api/generate/video/route.ts');
+
+    expect(handlers).toContain("formData.append('mode', 'image-to-image')");
+    expect(handlers).toContain('submitReplicatePrediction(');
+    expect(video).toContain('submitReplicatePrediction(');
+    expect(handlers).not.toContain("body: JSON.stringify({ version: params.model, input })");
+  });
+
+  test('Image, Video, and Cinema selectors filter by the active registered operation', async () => {
+    const image = await source('src/components/studio/image-studio.tsx');
+    const video = await source('src/components/studio/video-studio.tsx');
+    const cinema = await source('src/components/studio/cinema-studio.tsx');
+
+    expect(image).toContain("const imageOperationCapability = inputImageUrl ? 'i2i' : 't2i'");
+    expect(image).toContain(".includes(imageOperationCapability)");
+    expect(video).toContain("const videoOperationCapability = requiresImageToVideo ? 'i2v' : 't2v'");
+    expect(video).toContain(".includes(videoOperationCapability)");
+    expect(cinema).toContain(".split(',').includes('t2i')");
+
+    for (const content of [image, video, cinema]) {
+      expect(content).not.toContain('getAllCustomModels');
+    }
+  });
 });
