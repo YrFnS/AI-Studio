@@ -1,12 +1,18 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 
 import type { GenerateParams } from '@/lib/types';
 import { encodeGenerationJobToken } from '@/lib/generation-job';
 import { PROVIDERS } from '@/lib/providers-data';
+import { requireModelOperation } from '@/lib/generation-registry';
 import {
-  GenerationRegistryError,
-  requireModelOperation,
-} from '@/lib/generation-registry';
+  imageGenerationRequestSchema,
+  MAX_IMAGE_GENERATION_REQUEST_BYTES,
+  parseGenerationRequest,
+} from '@/lib/server/generation-request';
+import {
+  generationErrorResponse,
+  noStoreJson,
+} from '@/lib/server/generation-response';
 import {
   generateOpenAI,
   generateStability,
@@ -28,7 +34,6 @@ function getProviderById(id: string) {
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
     const {
       providerId,
       modelId,
@@ -66,28 +71,18 @@ export async function POST(req: NextRequest) {
       hiresSteps,
       hiresDenoise,
       apiKey,
-    } = body as GenerateParams & {
-      providerId: string;
-      modelId: string;
-      apiKey?: string;
-    };
-
-    if (!providerId || !modelId || !prompt) {
-      return NextResponse.json(
-        { error: 'providerId, modelId, and prompt are required' },
-        { status: 400 },
-      );
-    }
-    if (!apiKey) {
-      return NextResponse.json(
-        { error: 'API key is required. Please configure your API key in Settings.' },
-        { status: 400 },
-      );
-    }
+    } = await parseGenerationRequest(
+      req,
+      imageGenerationRequestSchema,
+      MAX_IMAGE_GENERATION_REQUEST_BYTES,
+    );
 
     const provider = getProviderById(providerId);
     if (!provider) {
-      return NextResponse.json({ error: 'Provider not found' }, { status: 404 });
+      return noStoreJson({
+        error: 'Provider not found',
+        code: 'provider_not_found',
+      }, 404);
     }
 
     requireModelOperation(
@@ -175,10 +170,10 @@ export async function POST(req: NextRequest) {
         result = await generateRecraft(params, apiKey, provider.baseUrl);
         break;
       default:
-        return NextResponse.json(
-          { error: `No image adapter is configured for ${provider.displayName}` },
-          { status: 400 },
-        );
+        return noStoreJson({
+          error: `No image adapter is configured for ${provider.displayName}`,
+          code: 'adapter_not_configured',
+        }, 400);
     }
 
     if (!Array.isArray(result) && 'jobId' in result) {
@@ -189,7 +184,7 @@ export async function POST(req: NextRequest) {
         kind: 'image',
       });
 
-      return NextResponse.json({
+      return noStoreJson({
         id: localJobId,
         jobId: localJobId,
         localJob: true,
@@ -198,22 +193,11 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    return NextResponse.json(
-      { status: 'completed', urls: result },
-      { headers: { 'Cache-Control': 'no-store' } },
-    );
+    return noStoreJson({ status: 'completed', urls: result });
   } catch (error) {
-    if (error instanceof GenerationRegistryError) {
-      return NextResponse.json(
-        { error: error.message, code: error.code },
-        { status: error.status },
-      );
-    }
-
-    console.error('Generate image error:', error);
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to generate image' },
-      { status: 500 },
-    );
+    return generationErrorResponse(error, {
+      logLabel: 'Generate image error',
+      fallbackMessage: 'Failed to generate image',
+    });
   }
 }
