@@ -6,7 +6,7 @@ Base: `main`
 
 ## Objective
 
-Make generation submission, polling, persistence, recovery, and cancellation deterministic before adding more providers or visual features. P0 is complete only when each request produces one durable result lifecycle, provider credentials are handled honestly, and supported asynchronous work survives local process restarts.
+Make generation submission, polling, persistence, recovery, cancellation, and provider routing deterministic before adding more providers or visual features. P0 is complete only when each request produces one durable result lifecycle, every exposed model/operation has an executable contract, provider credentials are handled honestly, and supported asynchronous work survives local process restarts.
 
 ## Completed implementation
 
@@ -82,22 +82,53 @@ Make generation submission, polling, persistence, recovery, and cancellation det
 
 ### Image editing and derived-action migration
 
-- Added `src/lib/generation-operation.ts` as a typed operation planner for edit, inpaint, upscale, variation, improve, and image-to-video actions.
-- The planner resolves a currently declared compatible provider/model/operation target before submission and builds the dedicated route contract for that operation.
+- Added `src/lib/generation-operation.ts` as the typed planner for edit, inpaint, upscale, variation, improve, and image-to-video actions.
 - Derived request bodies remain credential-free; the explicit client injects the selected provider key only for the local route call.
-- Image-to-video no longer blindly sends the active image model to a video endpoint. It selects a connected provider with a declared `i2v` video model and reports the selected target to the user.
-- Image Studio post-generation actions now use lifecycle handles for submission, polling, queue updates, persistence, cancellation, and page detachment.
+- Image-to-video no longer blindly sends the active image model to a video endpoint. It selects a connected provider with a registered `image-to-video` contract and reports the selected target to the user.
+- Image Studio post-generation actions use lifecycle handles for submission, polling, queue updates, persistence, cancellation, and page detachment.
 - Upscale, variation, and improve use their dedicated routes rather than the generic text-to-image route.
 - The Image Editor and Editor Controls Panel share `use-editor-generation.ts`; neither maintains a local polling loop or places provider keys in status URLs.
-- Editor actions stay on the explicitly selected provider and may choose a compatible model within that provider. They do not silently bill a different provider.
+- Editor actions stay on the explicitly selected provider and may choose a compatible registered model within that provider. They do not silently bill a different provider.
 - Editor and derived results preserve parent-generation relationships and return durable Gallery IDs.
-- The edit route now rejects unsupported providers instead of sending them an OpenAI-shaped payload.
+- The edit route rejects unsupported providers instead of sending them an OpenAI-shaped payload.
 - Removed the unused legacy `use-image-generate.ts` hook, which still contained component-owned polling, manual queue state, and API-key query parameters.
 - Added visible cancellation controls for editor and post-generation operations.
 
+### Authoritative provider, model, and operation registry
+
+- Added `src/lib/generation-registry.ts` as the executable source of truth for model operations.
+- Every exposed model operation declares:
+  - the exact operation,
+  - the route that owns it,
+  - the adapter identifier,
+  - and a verification level: `adapter-implemented`, `contract-reviewed`, or `live-verified`.
+- The registry distinguishes:
+  - text-to-image,
+  - image-to-image,
+  - edit,
+  - inpaint,
+  - variation,
+  - upscale,
+  - text-to-video,
+  - and image-to-video.
+- `/api/providers` decorates and filters the raw catalog through the registry. Catalog capability strings can no longer expose an operation by themselves.
+- Providers with no registered executable models are removed from generation selectors.
+- Image, Video, and Cinema selectors filter models and providers by the active operation before submission.
+- Switching an Image Studio reference image on or off switches the eligible model set between image-to-image and text-to-image.
+- Adding a Video Studio source frame switches the eligible model set between image-to-video and text-to-video.
+- Image, Video, and Cinema no longer merge arbitrary IndexedDB custom models into executable selectors. Custom or discovered models must obtain a registry contract before they can generate.
+- The image, video, edit, upscale, variation, and image-to-video routes call `requireModelOperation` and reject unregistered provider/model/operation/route combinations before contacting a provider.
+- `generation-operation.ts` consumes registry contracts rather than parsing legacy capability strings.
+- Removed false adapters that presented generic OpenAI, Replicate, or fal calls as verified upscale or variation operations.
+- Stability upscale now uses its registered synchronous conservative-upscale adapter.
+- Stability SD3 image-to-image explicitly sends image mode, model mapping, strength, and the source image.
+- Replicate submissions now distinguish official `owner/name` models from immutable version references instead of sending every model identifier as a `version`.
+- Runway, Luma, and fal image-to-video contracts retain dedicated route ownership and exact model selection.
+- No operation is marked `live-verified` until its owner-supplied-key smoke test is recorded.
+
 ### Stateless asynchronous jobs
 
-- Image, video, upscale, variation, and image-to-video routes return credential-free `aistudio-job.*` tokens.
+- Image, video, upscale, variation, and image-to-video routes return credential-free `aistudio-job.*` tokens where the adapter is asynchronous.
 - Tokens contain provider name, model ID, provider job ID, media kind, and token version, but never API keys.
 - `/api/generate/status` decodes the token and uses the key supplied in the POST body.
 - Older process-memory jobs remain temporarily compatible during migration.
@@ -112,10 +143,10 @@ Make generation submission, polling, persistence, recovery, and cancellation det
 
 ### Provider and key correctness
 
-- Replicate upscale and variation submissions use `version` rather than `model`.
-- Runway image-to-video uses `X-Runway-Version` and the `gen4_turbo` identifier.
-- Luma image-to-video follows its video-generation/keyframe contract.
-- fal image-to-video uses an action-specific video endpoint.
+- Replicate official models use the official model prediction endpoint; immutable version references use the version prediction endpoint.
+- Runway image-to-video uses the required API version header and registered model IDs.
+- Luma image-to-video follows its video-generation and keyframe contract.
+- fal image-to-video uses action-specific video endpoints.
 - Removed the fallback that declared any sufficiently long key valid.
 - Implemented bounded live checks where supported; unsupported checks report that validation is unavailable.
 - Google validation sends keys through headers rather than URL parameters.
@@ -131,13 +162,18 @@ Automated coverage now includes:
 - Explicit-client key injection and pass-through behavior.
 - Lifecycle immediate completion, async polling, queue ownership, failures, snapshots, cancellation, and missing-key recovery.
 - Dedicated edit-response persistence through the lifecycle.
-- Operation-compatible model resolution and image-to-video provider selection.
-- Source-level migration guards for Image Studio, Video Studio, Cinema Studio, both editor surfaces, and post-generation actions.
+- Per-model operation and route ownership.
+- Registry filtering of unsupported catalog claims.
+- Registry-backed derived-action model selection.
+- Official Replicate model routing versus immutable version routing.
+- Route-level rejection for unsupported model operations.
+- Source-level registry enforcement across Image Studio, Video Studio, Cinema Studio, both editor surfaces, and post-generation actions.
+- Prevention of custom-model selector bypasses.
 - Prevention of API keys in editor status URLs and prevention of generic-image upscale/variation calls.
 - Unsupported edit-provider rejection.
 - Prevention of the duplicate Cinema scene suffix.
 
-The permanent branch passed GitHub Actions CI after the implementation and documentation cleanup:
+The permanent branch passes the repository validation pipeline:
 
 - `bun install --frozen-lockfile`
 - `bun run typecheck`
@@ -145,9 +181,16 @@ The permanent branch passed GitHub Actions CI after the implementation and docum
 - `bun run lint`
 - `bun run build:app`
 
-The external Vercel check did not run a build because the account reached its build-rate limit. This is recorded separately from the successful repository production build.
+The external Vercel check may remain blocked by the account build-rate limit. That is recorded separately from the successful standalone production build.
 
 ## Remaining P0 work
+
+### Registry verification and extension workflow
+
+- Run owner-supplied-key smoke tests for every model/operation currently marked `adapter-implemented` or `contract-reviewed`.
+- Promote only evidenced contracts to `live-verified`.
+- Hide or repair any contract that fails live verification.
+- Define the reviewed registration workflow that allows custom and discovered models to become executable without bypassing the registry.
 
 ### Cancellation and recovery experience
 
@@ -159,13 +202,6 @@ The external Vercel check did not run a build because the account reached its bu
 - Remove the remaining process-memory dependency from authenticated provider media streaming.
 - Persist or stream completed media without exposing provider credentials.
 - Define expiry and recovery behavior for protected media links.
-
-### Full typed provider operation registry
-
-- Promote the provisional operation planner into the authoritative `provider + model + operation` registry for every generation route and selector.
-- Verify every declared model/operation pair against its real provider contract and hide combinations without an executable, tested adapter.
-- Add adapter verification metadata and separate text-to-image, image-to-image, edit, inpaint, variation, upscale, text-to-video, and image-to-video contracts.
-- Remove the remaining provider-wide capability heuristics once every caller consumes the registry.
 
 ### Input and network safety
 
@@ -194,4 +230,4 @@ P0 must not be marked complete until all of the following are evidenced:
 - One asynchronous video job survives a local server restart while polling.
 - Failed and cancelled jobs reach terminal states without infinite polling.
 - Settings never reports an untested key as valid.
-- Manual smoke tests pass with owner-supplied keys for every provider presented as verified.
+- Manual smoke tests pass with owner-supplied keys for every provider/model/operation presented as `live-verified`.
