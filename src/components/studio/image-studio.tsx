@@ -110,7 +110,7 @@ import { PromptLibrary } from '@/components/studio/prompt-library';
 import { SocialExportModal } from '@/components/social-export-modal';
 import { ImageUpload } from '@/components/studio/image-upload';
 import { ReferenceImagePicker } from '@/components/studio/reference-image-picker';
-import { saveReferenceImage, getAllCustomModels } from '@/lib/idb';
+import { saveReferenceImage } from '@/lib/idb';
 import { RecentBar } from '@/components/studio/recent-bar';
 import { RecentGenerations } from '@/components/studio/recent-generations';
 import { PromptSuggestions } from '@/components/studio/prompt-suggestions';
@@ -1276,7 +1276,14 @@ function SidebarContent({
             {providersLoading ? (
               <SelectItem value="__loading" disabled>Loading…</SelectItem>
             ) : (
-              providers.map((p) => (
+              providers
+                .filter((provider) => provider.models.some((model) => (
+                  model.type === 'image'
+                  && (model.capabilities || '').split(',').includes(
+                    inputImageUrl ? 'i2i' : 't2i',
+                  )
+                )))
+                .map((p) => (
                 <SelectItem key={p.id} value={p.id}>
                   <span className="flex items-center gap-2">
                     <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: p.color || '#888' }} />
@@ -3372,7 +3379,11 @@ export function ImageStudio() {
 
   // Derived ----------------------------------------------------------------
   const selectedProviderData = providers.find((p) => p.id === selectedImageProvider) ?? null;
-  const imageModels = selectedProviderData?.models.filter((m) => m.type === 'image') ?? [];
+  const imageOperationCapability = inputImageUrl ? 'i2i' : 't2i';
+  const imageModels = selectedProviderData?.models.filter((model) => (
+    model.type === 'image'
+    && (model.capabilities || '').split(',').includes(imageOperationCapability)
+  )) ?? [];
   const hasApiKey = apiKeysHook.hasKey(selectedImageProvider);
 
   // Reference image history: select from picker
@@ -3392,40 +3403,28 @@ export function ImageStudio() {
         if (!res.ok) throw new Error('Failed to fetch');
         const data: Provider[] = await res.json();
 
-        // Merge custom models from IndexedDB
-        try {
-          const customModels = await getAllCustomModels();
-          for (const cm of customModels) {
-            const provider = data.find((p) => p.name === cm.providerId || p.id === cm.providerId);
-            if (provider) {
-              provider.models.push({
-                id: `custom-${cm.id}`,
-                name: cm.name,
-                modelId: cm.modelId,
-                type: cm.type,
-                capabilities: cm.capabilities,
-                description: cm.description || '',
-                priceInfo: cm.priceInfo || '',
-                isDefault: false,
-              });
-            }
-          }
-        } catch { /* non-critical */ }
-
         setProviders(data);
 
-        // Auto-select first provider that has an API key
+        // Auto-select a provider/model registered for the current image operation.
         if (!selectedImageProvider && data.length > 0) {
-          const withKey = data.find((p) => apiKeysHook.hasKey(p.id));
-          const pick = withKey || data[0];
-          setSelectedImageProvider(pick.id);
-          // Auto-select default model
-          const defaultModel = pick.models.find((m) => m.isDefault && m.type === 'image');
-          if (defaultModel) {
-            setSelectedImageModel(defaultModel.modelId);
-          } else {
-            const firstImage = pick.models.find((m) => m.type === 'image');
-            if (firstImage) setSelectedImageModel(firstImage.modelId);
+          const requiredCapability = useAppStore.getState().inputImageUrl ? 'i2i' : 't2i';
+          const supportsRequiredOperation = (model: ProviderModel) => (
+            model.type === 'image'
+            && (model.capabilities || '').split(',').includes(requiredCapability)
+          );
+          const withKey = data.find((provider) => (
+            apiKeysHook.hasKey(provider.id)
+            && provider.models.some(supportsRequiredOperation)
+          ));
+          const withImage = data.find((provider) => (
+            provider.models.some(supportsRequiredOperation)
+          ));
+          const pick = withKey || withImage;
+          if (pick) {
+            setSelectedImageProvider(pick.id);
+            const eligibleModels = pick.models.filter(supportsRequiredOperation);
+            const defaultModel = eligibleModels.find((model) => model.isDefault);
+            setSelectedImageModel((defaultModel || eligibleModels[0])?.modelId || '');
           }
         }
       } catch {
@@ -3437,20 +3436,28 @@ export function ImageStudio() {
     load();
   }, [providerVersion]);
 
-  // When provider changes, reset model selection ---------------------------
+  // Provider or operation changes reset the selection to an eligible model.
   useEffect(() => {
     if (!selectedImageProvider || providers.length === 0) return;
-    const prov = providers.find((p) => p.id === selectedImageProvider);
-    if (!prov) return;
-    const defaultModel = prov.models.find((m) => m.isDefault && m.type === 'image');
-    if (defaultModel) {
-      setSelectedImageModel(defaultModel.modelId);
-    } else {
-      const firstImage = prov.models.find((m) => m.type === 'image');
-      if (firstImage) setSelectedImageModel(firstImage.modelId);
-      else setSelectedImageModel('');
-    }
-  }, [selectedImageProvider, providers, setSelectedImageModel]);
+    const provider = providers.find((candidate) => candidate.id === selectedImageProvider);
+    if (!provider) return;
+    const eligibleModels = provider.models.filter((model) => (
+      model.type === 'image'
+      && (model.capabilities || '').split(',').includes(imageOperationCapability)
+    ));
+    const currentIsEligible = eligibleModels.some(
+      (model) => model.modelId === selectedImageModel,
+    );
+    if (currentIsEligible) return;
+    const defaultModel = eligibleModels.find((model) => model.isDefault);
+    setSelectedImageModel((defaultModel || eligibleModels[0])?.modelId || '');
+  }, [
+    selectedImageProvider,
+    selectedImageModel,
+    providers,
+    imageOperationCapability,
+    setSelectedImageModel,
+  ]);
 
 
 
@@ -3533,6 +3540,23 @@ export function ImageStudio() {
 
     if (!currentPrompt.trim()) {
       toast.error('Please enter a prompt');
+      return;
+    }
+    const requiredCapability = currentInputImageUrl ? 'i2i' : 't2i';
+    const selectedGenerationModel = providers
+      .find((provider) => provider.id === selectedImageProvider)
+      ?.models.find((model) => model.modelId === selectedImageModel);
+    if (
+      !selectedGenerationModel
+      || !(selectedGenerationModel.capabilities || '')
+        .split(',')
+        .includes(requiredCapability)
+    ) {
+      toast.error(
+        currentInputImageUrl
+          ? 'The selected model is not registered for image-to-image generation.'
+          : 'The selected model is not registered for text-to-image generation.',
+      );
       return;
     }
     if (!hasApiKey) {

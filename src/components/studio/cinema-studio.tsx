@@ -9,7 +9,6 @@ import {
 
 
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
-import { getAllCustomModels } from '@/lib/idb';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import {
@@ -694,7 +693,12 @@ function CinemaSidebarContent({
             {providersLoading ? (
               <SelectItem value="__loading" disabled>Loading...</SelectItem>
             ) : (
-              providers.map((p) => (
+              providers
+                .filter((provider) => provider.models.some((model) => (
+                  model.type === 'image'
+                  && (model.capabilities || '').split(',').includes('t2i')
+                )))
+                .map((p) => (
                 <SelectItem key={p.id} value={p.id}>
                   <span className="flex items-center gap-2">
                     <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: p.color || '#888' }} />
@@ -920,7 +924,10 @@ export function CinemaStudio() {
 
   // Derived
   const selectedProviderData = providers.find((p) => p.id === selectedProvider) ?? null;
-  const imageModels = selectedProviderData?.models.filter((m) => m.type === 'image') ?? [];
+  const imageModels = selectedProviderData?.models.filter((model) => (
+    model.type === 'image'
+    && (model.capabilities || '').split(',').includes('t2i')
+  )) ?? [];
   const hasApiKey = apiKeysHook.hasKey(selectedProvider);
 
   // Build cinema suffix
@@ -937,38 +944,26 @@ export function CinemaStudio() {
         if (!res.ok) throw new Error('Failed to fetch');
         const data: Provider[] = await res.json();
 
-        // Merge custom models from IndexedDB
-        try {
-          const customModels = await getAllCustomModels();
-          for (const cm of customModels) {
-            const provider = data.find((p) => p.name === cm.providerId || p.id === cm.providerId);
-            if (provider) {
-              provider.models.push({
-                id: `custom-${cm.id}`,
-                name: cm.name,
-                modelId: cm.modelId,
-                type: cm.type,
-                capabilities: cm.capabilities,
-                description: cm.description || '',
-                priceInfo: cm.priceInfo || '',
-                isDefault: false,
-              });
-            }
-          }
-        } catch { /* non-critical */ }
-
         setProviders(data);
 
         if (!selectedProvider && data.length > 0) {
-          const withKey = data.find((p) => apiKeysHook.hasKey(p.id));
-          const pick = withKey || data[0];
-          setSelectedProvider(pick.id);
-          const defaultModel = pick.models.find((m) => m.isDefault && m.type === 'image');
-          if (defaultModel) {
-            setSelectedModel(defaultModel.modelId);
-          } else {
-            const firstImage = pick.models.find((m) => m.type === 'image');
-            if (firstImage) setSelectedModel(firstImage.modelId);
+          const supportsTextToImage = (model: ProviderModel) => (
+            model.type === 'image'
+            && (model.capabilities || '').split(',').includes('t2i')
+          );
+          const withKey = data.find((provider) => (
+            apiKeysHook.hasKey(provider.id)
+            && provider.models.some(supportsTextToImage)
+          ));
+          const withImage = data.find((provider) => (
+            provider.models.some(supportsTextToImage)
+          ));
+          const pick = withKey || withImage;
+          if (pick) {
+            setSelectedProvider(pick.id);
+            const eligibleModels = pick.models.filter(supportsTextToImage);
+            const defaultModel = eligibleModels.find((model) => model.isDefault);
+            setSelectedModel((defaultModel || eligibleModels[0])?.modelId || '');
           }
         }
       } catch {
@@ -980,20 +975,19 @@ export function CinemaStudio() {
     load();
   }, [providerVersion]);
 
-  // When provider changes, reset model
+  // When the provider changes, select an eligible text-to-image model.
   useEffect(() => {
     if (!selectedProvider || providers.length === 0) return;
-    const prov = providers.find((p) => p.id === selectedProvider);
-    if (!prov) return;
-    const defaultModel = prov.models.find((m) => m.isDefault && m.type === 'image');
-    if (defaultModel) {
-      setSelectedModel(defaultModel.modelId);
-    } else {
-      const firstImage = prov.models.find((m) => m.type === 'image');
-      if (firstImage) setSelectedModel(firstImage.modelId);
-      else setSelectedModel('');
-    }
-  }, [selectedProvider, providers]);
+    const provider = providers.find((candidate) => candidate.id === selectedProvider);
+    if (!provider) return;
+    const eligibleModels = provider.models.filter((model) => (
+      model.type === 'image'
+      && (model.capabilities || '').split(',').includes('t2i')
+    ));
+    if (eligibleModels.some((model) => model.modelId === selectedModel)) return;
+    const defaultModel = eligibleModels.find((model) => model.isDefault);
+    setSelectedModel((defaultModel || eligibleModels[0])?.modelId || '');
+  }, [selectedProvider, selectedModel, providers]);
 
 
 
@@ -1051,6 +1045,16 @@ export function CinemaStudio() {
     }
     if (!prompt.trim()) {
       toast.error('Please enter a prompt');
+      return;
+    }
+    const selectedGenerationModel = providers
+      .find((provider) => provider.id === selectedProvider)
+      ?.models.find((model) => model.modelId === selectedModel);
+    if (
+      !selectedGenerationModel
+      || !(selectedGenerationModel.capabilities || '').split(',').includes('t2i')
+    ) {
+      toast.error('The selected model is not registered for text-to-image generation.');
       return;
     }
     if (!hasApiKey) {

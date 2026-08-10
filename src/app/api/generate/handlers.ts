@@ -1,4 +1,6 @@
 import type { GenerateParams } from '@/lib/types';
+import { resolveImageBlob } from '@/lib/server/image-input';
+import { submitReplicatePrediction } from '@/lib/server/replicate';
 
 export async function generateOpenAI(
   params: GenerateParams,
@@ -49,85 +51,102 @@ export async function generateStability(
   params: GenerateParams,
   apiKey: string,
   providerBaseUrl: string,
-) {
-  const modelEndpoints: Record<string, string> = {
-    'stable-image-ultra': '/v2beta/stable-image/generate/ultra',
-    'stable-diffusion-3.5-large': '/v2beta/stable-image/generate/sd3',
-    'stable-diffusion-3.5-large-turbo': '/v2beta/stable-image/generate/sd3',
-    'stable-image-core': '/v2beta/stable-image/generate/sd3',
-    'sdxl-1.0': '/v2beta/stable-image/generate/sd3',
+): Promise<string[]> {
+  const sd3Models: Record<string, string> = {
+    'stable-diffusion-3.5-large': 'sd3.5-large',
+    'stable-diffusion-3.5-large-turbo': 'sd3.5-large-turbo',
+    'stable-diffusion-3.5-medium': 'sd3.5-medium',
   };
-  const endpoint = modelEndpoints[params.model] || '/v2beta/stable-image/generate/ultra';
+  const sd3Model = sd3Models[params.model];
+  const endpoint = params.model === 'stable-image-ultra'
+    ? 'ultra'
+    : params.model === 'stable-image-core'
+      ? 'core'
+      : sd3Model
+        ? 'sd3'
+        : null;
+
+  if (!endpoint) {
+    throw new Error(`No Stability image adapter exists for ${params.model}.`);
+  }
+
   const formData = new FormData();
   formData.append('prompt', params.prompt);
-  if (params.negativePrompt) formData.append('negative_prompt', params.negativePrompt);
-  if (params.aspectRatio) formData.append('aspect_ratio', params.aspectRatio);
+  if (params.negativePrompt) {
+    formData.append('negative_prompt', params.negativePrompt);
+  }
   formData.append('output_format', params.output_format || 'png');
-  if (params.seed) formData.append('seed', params.seed.toString());
-  if (params.style) formData.append('style', params.style);
-  if (params.clipGuidance && params.clipGuidance !== 'NONE') {
-    formData.append('clip_guidance_preset', params.clipGuidance);
-  }
-  if (params.sampler) formData.append('sampler', params.sampler);
-  if (params.scheduler) formData.append('scheduler', params.scheduler);
-  if (params.clipSkip && params.clipSkip > 1) formData.append('clip_skip', params.clipSkip.toString());
-  if (params.steps) formData.append('steps', params.steps.toString());
-  if (params.guidance) formData.append('cfg_scale', params.guidance.toString());
-  if (params.tileable) formData.append('tileable', 'true');
-  if (params.strength !== undefined && params.inputImageUrl) {
-    formData.append('strength', params.strength.toString());
-  }
-  if (params.safetyFilter === false) formData.append('safety', 'none');
+  if (params.seed !== undefined) formData.append('seed', String(params.seed));
 
-  const response = await fetch(`${providerBaseUrl}${endpoint}`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      Accept: 'image/*',
+  if (params.inputImageUrl) {
+    if (!sd3Model) {
+      throw new Error(`${params.model} is not registered for Stability image-to-image generation.`);
+    }
+    const imageBlob = await resolveImageBlob(params.inputImageUrl);
+    formData.append('image', imageBlob, 'image.png');
+    formData.append('mode', 'image-to-image');
+    formData.append('strength', String(params.strength ?? 0.65));
+  } else if (params.aspectRatio) {
+    formData.append('aspect_ratio', params.aspectRatio);
+  }
+
+  if (sd3Model) formData.append('model', sd3Model);
+
+  const response = await fetch(
+    `${providerBaseUrl}/v2beta/stable-image/generate/${endpoint}`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: 'image/*',
+      },
+      body: formData,
     },
-    body: formData,
-  });
+  );
   if (!response.ok) {
     const error = await response.text();
     throw new Error(`Stability API error: ${response.status} - ${error}`);
   }
+
   const buffer = await response.arrayBuffer();
-  return [
-    `data:image/${params.output_format || 'png'};base64,${Buffer.from(buffer).toString('base64')}`,
-  ];
+  return [`data:image/${params.output_format || 'png'};base64,${Buffer.from(buffer).toString('base64')}`];
 }
 
 export async function generateReplicate(
   params: GenerateParams,
   apiKey: string,
   providerBaseUrl: string,
-) {
-  const input: Record<string, unknown> = { prompt: params.prompt };
-  if (params.negativePrompt) input.negative_prompt = params.negativePrompt;
-  if (params.aspectRatio) input.aspect_ratio = params.aspectRatio;
-  if (params.steps) input.num_inference_steps = params.steps;
-  if (params.guidance) input.guidance_scale = params.guidance;
-  if (params.seed) input.seed = params.seed;
-  if (params.inputImageUrl) input.image = params.inputImageUrl;
-  if (params.sampler) input.scheduler = params.sampler;
-  if (params.scheduler) input.scheduler_type = params.scheduler;
-  if (params.clipSkip && params.clipSkip > 1) input.clip_skip = params.clipSkip;
-  if (params.strength !== undefined && params.inputImageUrl) input.strength = params.strength;
-  if (params.output_format) input.output_format = params.output_format;
-
-  const response = await fetch(`${providerBaseUrl}/v1/predictions`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ version: params.model, input }),
-  });
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Replicate API error: ${response.status} - ${error}`);
+): Promise<{ jobId: string; status: string }> {
+  const input: Record<string, unknown> = {
+    prompt: params.prompt,
+    negative_prompt: params.negativePrompt,
+    width: params.width,
+    height: params.height,
+    num_outputs: params.batchSize || 1,
+    num_inference_steps: params.steps,
+    guidance_scale: params.guidance,
+    seed: params.seed,
+    output_format: params.output_format,
+  };
+  if (params.inputImageUrl) {
+    input.image = params.inputImageUrl;
+    input.strength = params.strength ?? 0.65;
   }
-  const data = await response.json();
+
+  for (const key of Object.keys(input)) {
+    if (input[key] === undefined || input[key] === '') delete input[key];
+  }
+
+  const data = await submitReplicatePrediction(
+    providerBaseUrl,
+    params.model,
+    input,
+    apiKey,
+  );
+  if (typeof data.id !== 'string') {
+    throw new Error('Replicate did not return a prediction id');
+  }
+
   return { jobId: data.id, status: 'processing' };
 }
 

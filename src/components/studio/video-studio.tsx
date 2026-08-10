@@ -43,7 +43,7 @@ import {
 } from 'lucide-react';
 
 import { useAppStore } from '@/lib/store';
-import { saveReferenceImage, getAllCustomModels } from '@/lib/idb';
+import { saveReferenceImage } from '@/lib/idb';
 import { useApiKeys } from '@/hooks/use-api-keys';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -596,7 +596,12 @@ function VideoSidebarContent({
               </SelectItem>
             ) : (
               providers
-                .filter((p) => p.models.some((m) => m.type === 'video'))
+                .filter((provider) => provider.models.some((model) => (
+                  model.type === 'video'
+                  && (model.capabilities || '').split(',').includes(
+                    referenceImageUrl || videoStartFrameUrl ? 'i2v' : 't2v',
+                  )
+                )))
                 .map((p) => (
                   <SelectItem key={p.id} value={p.id}>
                     <span className="flex items-center gap-2">
@@ -1104,7 +1109,12 @@ export function VideoStudio() {
 
   // Derived ----------------------------------------------------------------
   const selectedProviderData = providers.find((p) => p.id === selectedVideoProvider) ?? null;
-  const videoModels = selectedProviderData?.models.filter((m) => m.type === 'video') ?? [];
+  const requiresImageToVideo = Boolean(referenceImageUrl || videoStartFrameUrl);
+  const videoOperationCapability = requiresImageToVideo ? 'i2v' : 't2v';
+  const videoModels = selectedProviderData?.models.filter((model) => (
+    model.type === 'video'
+    && (model.capabilities || '').split(',').includes(videoOperationCapability)
+  )) ?? [];
   const hasApiKey = apiKeysHook.hasKey(selectedVideoProvider);
 
   // Reset presets -----------------------------------------------------------
@@ -1145,43 +1155,27 @@ export function VideoStudio() {
         if (!res.ok) throw new Error('Failed to fetch');
         const data: Provider[] = await res.json();
 
-        // Merge custom models from IndexedDB
-        try {
-          const customModels = await getAllCustomModels();
-          for (const cm of customModels) {
-            const provider = data.find((p) => p.name === cm.providerId || p.id === cm.providerId);
-            if (provider) {
-              provider.models.push({
-                id: `custom-${cm.id}`,
-                name: cm.name,
-                modelId: cm.modelId,
-                type: cm.type,
-                capabilities: cm.capabilities,
-                description: cm.description || '',
-                priceInfo: cm.priceInfo || '',
-                isDefault: false,
-              });
-            }
-          }
-        } catch { /* non-critical */ }
-
         setProviders(data);
 
-        // Auto-select first provider that has video models and an API key
+        // Auto-select a provider/model registered for text-to-video.
         if (!selectedVideoProvider && data.length > 0) {
-          const withKeyAndVideo = data.find(
-            (p) => apiKeysHook.hasKey(p.id) && p.models.some((m) => m.type === 'video')
+          const supportsTextToVideo = (model: ProviderModel) => (
+            model.type === 'video'
+            && (model.capabilities || '').split(',').includes('t2v')
           );
-          const withVideo = data.find((p) => p.models.some((m) => m.type === 'video'));
-          const pick = withKeyAndVideo || withVideo || data[0];
-          setSelectedVideoProvider(pick.id);
-          // Auto-select default video model
-          const defaultModel = pick.models.find((m) => m.isDefault && m.type === 'video');
-          if (defaultModel) {
-            setSelectedVideoModel(defaultModel.modelId);
-          } else {
-            const firstVideo = pick.models.find((m) => m.type === 'video');
-            if (firstVideo) setSelectedVideoModel(firstVideo.modelId);
+          const withKeyAndVideo = data.find((provider) => (
+            apiKeysHook.hasKey(provider.id)
+            && provider.models.some(supportsTextToVideo)
+          ));
+          const withVideo = data.find((provider) => (
+            provider.models.some(supportsTextToVideo)
+          ));
+          const pick = withKeyAndVideo || withVideo;
+          if (pick) {
+            setSelectedVideoProvider(pick.id);
+            const eligibleModels = pick.models.filter(supportsTextToVideo);
+            const defaultModel = eligibleModels.find((model) => model.isDefault);
+            setSelectedVideoModel((defaultModel || eligibleModels[0])?.modelId || '');
           }
         }
       } catch {
@@ -1194,17 +1188,25 @@ export function VideoStudio() {
   }, [providerVersion]);
   useEffect(() => {
     if (!selectedVideoProvider || providers.length === 0) return;
-    const prov = providers.find((p) => p.id === selectedVideoProvider);
-    if (!prov) return;
-    const defaultModel = prov.models.find((m) => m.isDefault && m.type === 'video');
-    if (defaultModel) {
-      setSelectedVideoModel(defaultModel.modelId);
-    } else {
-      const firstVideo = prov.models.find((m) => m.type === 'video');
-      if (firstVideo) setSelectedVideoModel(firstVideo.modelId);
-      else setSelectedVideoModel('');
-    }
-  }, [selectedVideoProvider, providers, setSelectedVideoModel]);
+    const provider = providers.find((candidate) => candidate.id === selectedVideoProvider);
+    if (!provider) return;
+    const eligibleModels = provider.models.filter((model) => (
+      model.type === 'video'
+      && (model.capabilities || '').split(',').includes(videoOperationCapability)
+    ));
+    const currentIsEligible = eligibleModels.some(
+      (model) => model.modelId === selectedVideoModel,
+    );
+    if (currentIsEligible) return;
+    const defaultModel = eligibleModels.find((model) => model.isDefault);
+    setSelectedVideoModel((defaultModel || eligibleModels[0])?.modelId || '');
+  }, [
+    selectedVideoProvider,
+    selectedVideoModel,
+    providers,
+    videoOperationCapability,
+    setSelectedVideoModel,
+  ]);
 
 
 
@@ -1275,6 +1277,25 @@ export function VideoStudio() {
       return;
     }
 
+    const sourceImage = referenceImageUrl || state.videoStartFrameUrl;
+    const requiredCapability = sourceImage ? 'i2v' : 't2v';
+    const selectedGenerationModel = providers
+      .find((provider) => provider.id === state.selectedVideoProvider)
+      ?.models.find((model) => model.modelId === state.selectedVideoModel);
+    if (
+      !selectedGenerationModel
+      || !(selectedGenerationModel.capabilities || '')
+        .split(',')
+        .includes(requiredCapability)
+    ) {
+      toast.error(
+        sourceImage
+          ? 'The selected model is not registered for image-to-video generation.'
+          : 'The selected model is not registered for text-to-video generation.',
+      );
+      return;
+    }
+
     const activeHandle = videoGenerationHandleRef.current;
     if (
       activeHandle
@@ -1303,7 +1324,10 @@ export function VideoStudio() {
     if (moodPreset) enhancedPrompt += moodPreset.suffix;
 
     const provData = providers.find((p) => p.id === state.selectedVideoProvider);
-    const vModels = provData?.models.filter((m) => m.type === 'video') ?? [];
+    const vModels = provData?.models.filter((model) => (
+      model.type === 'video'
+      && (model.capabilities || '').split(',').includes(requiredCapability)
+    )) ?? [];
 
     const generationStartTime = Date.now();
     const generationId = createGenerationId('vid');
