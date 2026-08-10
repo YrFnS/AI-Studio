@@ -4,6 +4,11 @@ import {
   createGenerationId,
   type GenerationDescriptor,
 } from '@/lib/generation-persistence';
+import type {
+  GenerationOperationId,
+  GenerationRouteId,
+  ModelOperationContract,
+} from '@/lib/generation-registry';
 
 export type GenerationOperation =
   | 'edit'
@@ -18,6 +23,8 @@ export interface GenerationOperationModel {
   name: string;
   type: string;
   capabilities?: string;
+  operations?: readonly GenerationOperationId[];
+  operationContracts?: readonly ModelOperationContract[];
   isDefault?: boolean;
 }
 
@@ -84,67 +91,48 @@ export class GenerationOperationError extends Error {
 const PROVIDER_PRIORITY: Record<GenerationOperation, readonly string[]> = {
   edit: ['openai', 'stability'],
   inpaint: ['openai', 'stability'],
-  upscale: ['stability', 'openai', 'replicate', 'fal'],
-  variation: ['openai', 'stability', 'replicate', 'fal'],
-  improve: ['openai', 'stability', 'replicate', 'fal'],
+  upscale: ['stability'],
+  variation: ['openai', 'stability'],
+  improve: ['openai', 'stability'],
   img2vid: ['runway', 'luma', 'fal'],
+};
+
+const REGISTRY_OPERATION: Record<GenerationOperation, GenerationOperationId> = {
+  edit: 'edit',
+  inpaint: 'inpaint',
+  upscale: 'upscale',
+  variation: 'variation',
+  improve: 'variation',
+  img2vid: 'image-to-video',
+};
+
+const REQUIRED_ROUTE: Record<GenerationOperation, GenerationRouteId> = {
+  edit: 'edit',
+  inpaint: 'edit',
+  upscale: 'upscale',
+  variation: 'variations',
+  improve: 'variations',
+  img2vid: 'img2vid',
 };
 
 function providerKey(provider: GenerationOperationProvider): string {
   return provider.name || provider.id;
 }
 
-function parseCapabilities(model: GenerationOperationModel): Set<string> {
-  return new Set(
-    (model.capabilities || '')
-      .split(',')
-      .map((capability) => capability.trim().toLowerCase())
-      .filter(Boolean),
-  );
-}
-
 function modelSupports(
   operation: GenerationOperation,
-  provider: GenerationOperationProvider,
   model: GenerationOperationModel,
 ): boolean {
-  const providerName = providerKey(provider);
-  const capabilities = parseCapabilities(model);
+  const registeredOperation = REGISTRY_OPERATION[operation];
+  if (!model.operations?.includes(registeredOperation)) return false;
 
-  if (operation === 'img2vid') {
-    return model.type === 'video' && capabilities.has('i2v');
-  }
+  const contracts = model.operationContracts;
+  if (!contracts) return false;
 
-  if (model.type !== 'image') return false;
-
-  if (operation === 'edit' || operation === 'inpaint') {
-    if (providerName !== 'openai' && providerName !== 'stability') return false;
-    return capabilities.has('edit') || capabilities.has('inpaint');
-  }
-
-  if (operation === 'upscale') {
-    if (capabilities.has('upscale')) return true;
-    // OpenAI's dedicated upscale route uses its edits contract.
-    return providerName === 'openai'
-      && (capabilities.has('edit') || capabilities.has('i2i'));
-  }
-
-  if (operation === 'variation' || operation === 'improve') {
-    if (
-      capabilities.has('variations')
-      || capabilities.has('variation')
-      || capabilities.has('i2i')
-      || capabilities.has('edit')
-    ) {
-      return true;
-    }
-
-    // The Stability variations adapter uses the SD3 image-to-image contract.
-    return providerName === 'stability'
-      && model.modelId === 'stable-diffusion-3.5-large';
-  }
-
-  return false;
+  return contracts.some((contract) => (
+    contract.operation === registeredOperation
+    && contract.routes.includes(REQUIRED_ROUTE[operation])
+  ));
 }
 
 function providerIsConfigured(
@@ -160,7 +148,7 @@ function selectCompatibleModel(
   preferredModelId?: string,
 ): GenerationOperationModel | null {
   const compatible = provider.models.filter((model) =>
-    modelSupports(operation, provider, model),
+    modelSupports(operation, model),
   );
   if (compatible.length === 0) return null;
 
@@ -234,7 +222,7 @@ export function resolveGenerationOperationTarget(
     ? 'image-to-video'
     : options.operation;
   throw new GenerationOperationError(
-    `No connected provider has a verified ${operationLabel} model. Choose a compatible provider/model in Settings.`,
+    `No connected provider has a registered ${operationLabel} adapter. Choose a compatible provider and model in Settings.`,
     'unsupported-operation',
   );
 }
@@ -369,6 +357,7 @@ export function prepareGenerationOperation(
     duration: target.type === 'video' ? options.duration || 5 : undefined,
     params: {
       action: options.operation,
+      registryOperation: REGISTRY_OPERATION[options.operation],
       sourceProviderId: options.preferredProviderId,
       sourceModelId: options.preferredModelId,
       targetProviderId: target.providerId,
