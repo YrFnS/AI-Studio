@@ -8,6 +8,8 @@ AI Studio is a local-first, multi-provider workspace for AI image and video gene
 - **UI-managed provider keys** — users add and remove keys from the web interface; provider keys are not configured through `.env` files.
 - **Browser persistence** — keys, generations, prompts, collections, reference images, and custom models are stored in IndexedDB.
 - **Explicit generation client** — every browser module that submits or polls generation work imports the shared client directly; AI Studio does not replace `window.fetch` globally.
+- **Typed generation lifecycle** — primary studios, model comparison, editing, and derived actions share one submit, poll, persist, queue, cancellation, and recovery contract.
+- **Operation-aware routing** — edit, inpaint, upscale, variation, improve, and image-to-video actions resolve a compatible provider/model target before submission instead of reusing the currently selected model blindly.
 - **Local provider proxy** — Next.js routes running on the same machine translate requests to each provider's API format.
 - **No persistent server-side credentials** — provider keys are not written to a server database or configuration file.
 - **Stateless async polling** — long-running jobs return credential-free tokens containing only provider job metadata; polling sends the locally stored key in a POST body.
@@ -83,6 +85,10 @@ Clearing this site's browser storage removes this locally persisted data.
 
 Every browser generation caller imports `generationFetch` from `src/lib/generation-client.ts`. The client reads the selected provider key from IndexedDB when the caller did not already supply it, sends the request to the local Next.js route, and leaves unrelated network requests untouched. No global fetch monkey patch is installed.
 
+`src/lib/generation-lifecycle.ts` owns the durable lifecycle for new work and interrupted work: creation, submission, asynchronous polling, queue updates, completion or failure persistence, local cancellation, page detachment, and recovery. Immediate provider results and asynchronous jobs therefore use the same terminal path.
+
+For editing and derived actions, `src/lib/generation-operation.ts` selects a compatible operation target and builds the dedicated edit, upscale, variation, or image-to-video request. The request body remains credential-free until the explicit client injects the matching locally stored provider key. Image-to-video can select a connected video provider rather than sending an image model identifier to a video endpoint.
+
 When a user starts a generation, the local Next.js route calls the selected provider. The key is used for that request but is not persisted in a server-side database.
 
 For asynchronous providers, the submission route returns a stateless token containing the provider name, model ID, provider job ID, and media kind. The token never includes the provider API key. Each status request is a POST that supplies the token and reads the provider key again from IndexedDB. This allows polling to continue after the local Next.js process restarts without storing provider credentials in process memory.
@@ -105,13 +111,15 @@ The verified video catalog currently includes:
 
 Image support includes the providers implemented in `src/app/api/generate/handlers.ts` and filtered by `src/lib/provider-capabilities.ts`.
 
+Operation-aware editing and derived actions currently use the compatibility rules in `src/lib/generation-operation.ts`. P0 tracks the remaining work to promote those rules into the authoritative registry used by every model selector and generation route.
+
 ## Project structure
 
 ```text
 src/
 ├── app/
 │   ├── api/
-│   │   ├── generate/             # Provider submission, polling, and media proxy routes
+│   │   ├── generate/             # Provider submission, polling, editing, and media proxy routes
 │   │   ├── keys/                 # Provider-key connection tests
 │   │   ├── models/               # Model catalog and discovery endpoints
 │   │   ├── prompt-suggestions/   # Prompt assistance
@@ -122,12 +130,14 @@ src/
 │   └── page.tsx
 ├── components/
 │   ├── pending-generation-recovery.tsx
-│   ├── studio/                   # Image, video, cinema, gallery, and settings workspaces
+│   ├── studio/                   # Studios, editors, lifecycle hooks, gallery, and settings
 │   └── ui/                       # Shared shadcn/Radix components
 ├── hooks/
 └── lib/
     ├── generation-client.ts      # Explicit browser transport and key injection
     ├── generation-job.ts         # Credential-free stateless async job tokens
+    ├── generation-lifecycle.ts   # Submit, poll, persist, queue, cancel, and resume lifecycle
+    ├── generation-operation.ts   # Operation-compatible provider/model request planning
     ├── generation-poller.ts      # Shared resilient polling policy
     ├── idb.ts                    # Browser persistence
     ├── provider-capabilities.ts  # Executable adapter matrix
