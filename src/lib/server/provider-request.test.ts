@@ -9,6 +9,12 @@ import {
 
 const originalFetch = globalThis.fetch;
 
+function mockFetch(
+  implementation: (...args: Parameters<typeof fetch>) => ReturnType<typeof fetch>,
+) {
+  globalThis.fetch = implementation as unknown as typeof fetch;
+}
+
 afterEach(() => {
   globalThis.fetch = originalFetch;
 });
@@ -24,10 +30,10 @@ async function rejected(promise: Promise<unknown>) {
 
 describe('providerFetch', () => {
   test('normalizes authentication failures without exposing provider bodies', async () => {
-    globalThis.fetch = (async () => new Response(
+    mockFetch(async () => new Response(
       'secret upstream account detail',
       { status: 401 },
-    )) as typeof fetch;
+    ));
 
     const error = await rejected(providerFetch(
       'OpenAI',
@@ -48,9 +54,9 @@ describe('providerFetch', () => {
   });
 
   test('marks quota and rate-limit failures as retryable', async () => {
-    globalThis.fetch = (async () => new Response('quota exceeded', {
+    mockFetch(async () => new Response('quota exceeded', {
       status: 429,
-    })) as typeof fetch;
+    }));
 
     const error = await rejected(providerFetch(
       'Fal.ai',
@@ -65,9 +71,9 @@ describe('providerFetch', () => {
   });
 
   test('infers a provider label from a known endpoint', async () => {
-    globalThis.fetch = (async () => new Response('denied', {
+    mockFetch(async () => new Response('denied', {
       status: 403,
-    })) as typeof fetch;
+    }));
 
     const error = await rejected(providerFetch(
       'https://api.openai.com/v1/images/generations',
@@ -77,12 +83,12 @@ describe('providerFetch', () => {
   });
 
   test('turns an aborted deadline into a normalized timeout', async () => {
-    globalThis.fetch = ((_input, init) => new Promise<Response>((_resolve, reject) => {
+    mockFetch((_input, init) => new Promise<Response>((_resolve, reject) => {
       const signal = init?.signal;
       const abort = () => reject(new Error('aborted'));
       if (signal?.aborted) abort();
       else signal?.addEventListener('abort', abort, { once: true });
-    })) as typeof fetch;
+    }));
 
     const error = await rejected(providerFetch(
       'Runway',
@@ -100,10 +106,10 @@ describe('providerFetch', () => {
   });
 
   test('normalizes unreadable success responses', async () => {
-    globalThis.fetch = (async () => new Response('not-json', {
+    mockFetch(async () => new Response('not-json', {
       status: 200,
       headers: { 'Content-Type': 'application/json' },
-    })) as typeof fetch;
+    }));
 
     const response = await providerFetch(
       'Replicate',
