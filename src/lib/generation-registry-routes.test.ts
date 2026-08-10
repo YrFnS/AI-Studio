@@ -52,7 +52,7 @@ describe('generation route registry enforcement', () => {
       expect(content).toContain('requireModelOperation(');
       expect(content).toContain(expectation.operation);
       expect(content).toContain(expectation.route);
-      expect(content).toContain('GenerationRegistryError');
+      expect(content).toContain('generationErrorResponse(');
     });
   }
 
