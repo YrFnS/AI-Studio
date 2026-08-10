@@ -35,6 +35,25 @@ Make generation submission, polling, and browser persistence deterministic befor
   - `video-studio.tsx`
 - Added a repository coverage test that fails whenever a browser module calls `/api/generate/*` without importing the explicit client.
 
+### Typed generation lifecycle handles
+
+- Added `src/lib/generation-lifecycle.ts` as the higher-level owner of `begin → submit → mark processing → poll → complete/fail`.
+- A handle exposes a typed result promise, immutable snapshots, subscriptions, provider job metadata, and an idempotent cancellation operation.
+- Immediate and asynchronous provider responses share the same terminal path and persistence contract.
+- Optional queue ports let a lifecycle own queue insertion and terminal updates without importing Zustand directly.
+- External abort signals detach page ownership without marking provider work failed, allowing the next browser session to resume from IndexedDB.
+- Missing keys during recovery can remain non-terminal instead of destroying an otherwise valid provider job.
+- Lifecycle dependencies are injectable, so transport, polling, persistence, key lookup, time, queue behavior, and cancellation are covered without live provider calls.
+
+### Model Compare lifecycle migration
+
+- Model Compare now delegates stateful generation work to `use-model-compare.ts` instead of duplicating submission and interval polling inside the dialog component.
+- Every comparison slot creates its own lifecycle handle and durable generation descriptor.
+- Immediate and asynchronous comparison outputs are now saved to the Gallery.
+- Changing a slot provider/model or removing an active slot cancels only that slot's lifecycle and records a terminal state.
+- Closing or unmounting the presentation does not cancel provider work; lifecycle persistence and startup recovery retain ownership.
+- The dialog component is now presentation-focused and consumes the shared hook.
+
 ### Stateless async jobs
 
 - Image, video, upscale, variation, and image-to-video routes now return `aistudio-job.*` tokens.
@@ -55,10 +74,12 @@ Make generation submission, polling, and browser persistence deterministic befor
 
 - Added `PendingGenerationRecovery`, mounted once from the root layout.
 - On a fresh page session, it scans IndexedDB for older `processing` records with a provider job ID.
-- It reads the matching provider key from IndexedDB and resumes polling with bounded concurrency.
-- Completed jobs are persisted through the same explicit generation lifecycle used by the studios.
+- Recovery now uses `resumeGenerationJob`; it no longer implements a second poll/complete/fail pipeline.
+- Lifecycle handles read the matching provider key and resume polling with bounded concurrency.
+- Completed jobs are persisted through the same lifecycle terminal path used by new jobs.
 - Failed and timed-out recovery attempts reach a terminal failed state.
 - Jobs whose provider key is missing remain recoverable and receive a clear reconnect message instead of losing provider context.
+- Unmounting the page detaches recovery handles without falsely marking provider jobs failed.
 
 ### Provider contract repairs included in P0
 
@@ -81,14 +102,16 @@ Make generation submission, polling, and browser persistence deterministic befor
 - Malformed, legacy, and oversized token inputs are rejected.
 - Polling tests cover POST credential handling, transient recovery, retry exhaustion, cancellation, original-job deadlines, coordinator backoff, and terminal non-2xx normalization.
 - Explicit-client tests cover native pass-through, key injection, explicit-key preservation, GET-to-POST conversion, IndexedDB key recovery, and terminal invalid requests.
+- Lifecycle tests cover immediate completion, asynchronous polling, queue ownership, submission failure, idempotent cancellation, snapshot transitions, and non-terminal missing-key recovery.
 - The coverage test prevents a new browser generation caller from bypassing the explicit client.
 
 ## Remaining P0 work
 
 ### Generation lifecycle consolidation
 
-- Replace duplicated studio submission, queue, completion, and fixed-interval timer code with higher-level generation-client job handles.
-- Move Image, Video, Cinema, Compare, and post-generation actions onto the same typed submit/poll/persist lifecycle.
+- Move Image Studio, Video Studio, Cinema Studio, image editing, and post-generation actions onto `startGenerationJob` lifecycle handles.
+- Remove their duplicated queue, persistence, completion, failure, and fixed-interval timer code after each migration.
+- Connect primary Image, Video, and Cinema lifecycle handles to the global generation queue port.
 - Add user-facing cancellation controls and provider cancellation adapters where supported.
 - Add a visible recovery state for jobs waiting on a missing provider key.
 
