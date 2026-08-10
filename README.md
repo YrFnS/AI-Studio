@@ -7,6 +7,7 @@ AI Studio is a local-first, multi-provider workspace for AI image and video gene
 - **No external database** — there is no PostgreSQL, SQLite, Prisma, Supabase, or hosted database requirement.
 - **UI-managed provider keys** — users add and remove keys from the web interface; provider keys are not configured through `.env` files.
 - **Browser persistence** — keys, generations, prompts, collections, reference images, and custom models are stored in IndexedDB.
+- **Explicit generation client** — every browser module that submits or polls generation work imports the shared client directly; AI Studio does not replace `window.fetch` globally.
 - **Local provider proxy** — Next.js routes running on the same machine translate requests to each provider's API format.
 - **No persistent server-side credentials** — provider keys are not written to a server database or configuration file.
 - **Stateless async polling** — long-running jobs return credential-free tokens containing only provider job metadata; polling sends the locally stored key in a POST body.
@@ -80,9 +81,13 @@ Clearing this site's browser storage removes this locally persisted data.
 
 ### Sent during generation and polling
 
-When a user starts a generation, the browser reads the selected provider key from IndexedDB and sends it to the local Next.js route. That local route calls the chosen provider. The key is used for that request but is not persisted in a server-side database.
+Every browser generation caller imports `generationFetch` from `src/lib/generation-client.ts`. The client reads the selected provider key from IndexedDB when the caller did not already supply it, sends the request to the local Next.js route, and leaves unrelated network requests untouched. No global fetch monkey patch is installed.
+
+When a user starts a generation, the local Next.js route calls the selected provider. The key is used for that request but is not persisted in a server-side database.
 
 For asynchronous providers, the submission route returns a stateless token containing the provider name, model ID, provider job ID, and media kind. The token never includes the provider API key. Each status request is a POST that supplies the token and reads the provider key again from IndexedDB. This allows polling to continue after the local Next.js process restarts without storing provider credentials in process memory.
+
+The shared polling coordinator applies bounded retry, backoff, deadline, cancellation, and terminal-error behavior. `PendingGenerationRecovery` scans IndexedDB after a new page session and resumes older processing jobs through the same polling and persistence path.
 
 Some authenticated provider outputs still use short-lived protected-media tokens so the browser can stream the result without exposing the provider key. Restarting the local process invalidates those temporary protected-media links; eliminating that remaining process-memory dependency is tracked in `docs/P0-RUNTIME-INTEGRITY.md`.
 
@@ -116,12 +121,14 @@ src/
 │   ├── layout.tsx
 │   └── page.tsx
 ├── components/
+│   ├── pending-generation-recovery.tsx
 │   ├── studio/                   # Image, video, cinema, gallery, and settings workspaces
-│   ├── ui/                       # Shared shadcn/Radix components
-│   └── secure-provider-fetch-bridge.tsx
+│   └── ui/                       # Shared shadcn/Radix components
 ├── hooks/
 └── lib/
+    ├── generation-client.ts      # Explicit browser transport and key injection
     ├── generation-job.ts         # Credential-free stateless async job tokens
+    ├── generation-poller.ts      # Shared resilient polling policy
     ├── idb.ts                    # Browser persistence
     ├── provider-capabilities.ts  # Executable adapter matrix
     ├── providers-data.ts         # Static provider and model definitions
