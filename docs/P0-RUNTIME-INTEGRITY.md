@@ -8,13 +8,13 @@ Base: `main`
 
 Make generation submission, polling, and browser persistence deterministic before adding more providers or UI features. P0 is complete only when one generation creates one durable gallery record, provider keys are handled honestly, and supported async jobs recover cleanly from local process restarts.
 
-## Completed in the first implementation slice
+## Completed implementation
 
 ### Single persistence owner
 
 - Removed `GenerationRuntimeBridge`, which globally intercepted generation requests and wrote a second set of generation records.
 - Kept the explicit persistence lifecycle already used by Image, Video, and Cinema Studio: `beginGeneration`, `markGenerationProcessing`, `completeGeneration`, and `failGeneration`.
-- Retained `SecureProviderFetchBridge` only as a temporary compatibility layer for key injection and legacy GET-to-POST status conversion.
+- Retained `SecureProviderFetchBridge` only as a temporary compatibility layer while the remaining studio callers are migrated to the explicit generation client.
 
 ### Stateless async jobs
 
@@ -24,7 +24,25 @@ Make generation submission, polling, and browser persistence deterministic befor
 - `/api/generate/status` decodes stateless tokens and uses the key supplied in the POST body.
 - Existing process-memory job IDs remain supported temporarily for backward compatibility.
 
-### Provider contract repairs included in this slice
+### Shared resilient polling policy
+
+- Added `src/lib/generation-poller.ts` as the common status-request and polling engine.
+- Status checks use POST and mark direct resilient callers with `x-ai-studio-poll-client: resilient`.
+- Added exponential backoff, bounded jitter, an overall deadline, a consecutive transport-error limit, cancellation support, and normalized terminal errors.
+- The compatibility bridge now routes Image Studio, Video Studio, Cinema Studio, Model Compare, and post-generation polling through the same coordinator without stacking multiple polling loops.
+- Fixed-interval legacy callers may continue ticking locally, but the coordinator throttles actual status traffic according to the shared backoff policy.
+- Non-2xx terminal payloads and exhausted retries are returned as normal `{ status: 'failed' }` results so existing studio loops stop instead of logging forever.
+
+### Interrupted-job recovery
+
+- Added `PendingGenerationRecovery`, mounted once from the root layout.
+- On a fresh page session, it scans IndexedDB for older `processing` records with a provider job ID.
+- It reads the matching provider key from IndexedDB and resumes polling with bounded concurrency.
+- Completed jobs are persisted through the same explicit generation lifecycle used by the studios.
+- Failed and timed-out recovery attempts reach a terminal failed state.
+- Jobs whose provider key is missing remain recoverable and receive a clear reconnect message instead of losing provider context.
+
+### Provider contract repairs included in P0
 
 - Replicate upscale and variation submissions use the prediction `version` field instead of `model`.
 - Runway image-to-video uses `X-Runway-Version` and the `gen4_turbo` identifier.
@@ -43,15 +61,16 @@ Make generation submission, polling, and browser persistence deterministic befor
 - Token round-trip tests cover image and video jobs.
 - Tests verify extra credential fields are not serialized.
 - Malformed, legacy, and oversized token inputs are rejected.
+- Polling tests cover POST credential handling, transient recovery, retry exhaustion, cancellation, original-job deadlines, coordinator backoff, and terminal non-2xx normalization.
 
 ## Remaining P0 work
 
-### Generation client consolidation
+### Explicit generation-client migration
 
-- Replace duplicated Image, Video, Cinema, Compare, and post-generation polling code with one explicit generation client.
-- Remove `SecureProviderFetchBridge` after the final legacy caller is migrated.
-- Add bounded polling with backoff, deadline, cancellation, offline recovery, and retry limits.
-- Resume pending jobs from IndexedDB after reload.
+- Replace the remaining duplicated submission and UI lifecycle code in Image, Video, Cinema, Compare, and post-generation actions with one explicit generation client.
+- Remove `SecureProviderFetchBridge` after the final caller is migrated.
+- Add user-facing cancellation controls and provider cancellation adapters where supported.
+- Add a visible recovery state for jobs waiting on a missing provider key.
 
 ### Protected media
 
