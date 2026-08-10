@@ -3,7 +3,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import type { GenerateParams } from '@/lib/types';
 import { encodeGenerationJobToken } from '@/lib/generation-job';
 import { PROVIDERS } from '@/lib/providers-data';
-import { supportsGeneration } from '@/lib/provider-capabilities';
+import {
+  GenerationRegistryError,
+  requireModelOperation,
+} from '@/lib/generation-registry';
 import {
   generateOpenAI,
   generateStability,
@@ -15,7 +18,6 @@ import {
   generateHuggingFace,
   generateAIMLAPI,
   generateGoogle,
-  generateLeonardo,
   generateRecraft,
   generateBFL,
 } from '../handlers';
@@ -87,12 +89,13 @@ export async function POST(req: NextRequest) {
     if (!provider) {
       return NextResponse.json({ error: 'Provider not found' }, { status: 404 });
     }
-    if (!supportsGeneration(provider.name, 'image')) {
-      return NextResponse.json(
-        { error: `Image generation is not supported for ${provider.displayName}` },
-        { status: 400 },
-      );
-    }
+
+    requireModelOperation(
+      provider.name,
+      modelId,
+      inputImageUrl ? 'image-to-image' : 'text-to-image',
+      'image',
+    );
 
     const params: GenerateParams = {
       prompt,
@@ -168,9 +171,6 @@ export async function POST(req: NextRequest) {
       case 'google-aistudio':
         result = await generateGoogle(params, apiKey, provider.baseUrl);
         break;
-      case 'leonardo':
-        result = await generateLeonardo(params, apiKey, provider.baseUrl);
-        break;
       case 'recraft':
         result = await generateRecraft(params, apiKey, provider.baseUrl);
         break;
@@ -198,8 +198,18 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    return NextResponse.json({ status: 'completed', urls: result });
+    return NextResponse.json(
+      { status: 'completed', urls: result },
+      { headers: { 'Cache-Control': 'no-store' } },
+    );
   } catch (error) {
+    if (error instanceof GenerationRegistryError) {
+      return NextResponse.json(
+        { error: error.message, code: error.code },
+        { status: error.status },
+      );
+    }
+
     console.error('Generate image error:', error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : 'Failed to generate image' },
