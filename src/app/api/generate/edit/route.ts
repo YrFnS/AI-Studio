@@ -1,23 +1,21 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 
 import { PROVIDERS } from '@/lib/providers-data';
+import { requireModelOperation } from '@/lib/generation-registry';
 import {
-  GenerationRegistryError,
-  requireModelOperation,
-} from '@/lib/generation-registry';
+  editGenerationRequestSchema,
+  MAX_EDIT_REQUEST_BYTES,
+  parseGenerationRequest,
+} from '@/lib/server/generation-request';
+import {
+  generationErrorResponse,
+  noStoreJson,
+} from '@/lib/server/generation-response';
+import { resolveImageBlob } from '@/lib/server/image-input';
+import { providerFetch as fetch } from '@/lib/server/provider-request';
 
 function getProviderById(id: string) {
   return PROVIDERS.find((provider) => provider.id === id);
-}
-
-function base64ToBlob(base64: string, contentType = 'image/png'): Blob {
-  const raw = base64.includes(',') ? base64.split(',')[1] : base64;
-  const binary = atob(raw);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return new Blob([bytes], { type: contentType });
 }
 
 async function editOpenAI(
@@ -33,8 +31,8 @@ async function editOpenAI(
   apiKey: string,
   providerBaseUrl: string,
 ) {
-  const imageBlob = base64ToBlob(params.image);
-  const maskBlob = params.mask ? base64ToBlob(params.mask) : undefined;
+  const imageBlob = await resolveImageBlob(params.image);
+  const maskBlob = params.mask ? await resolveImageBlob(params.mask) : undefined;
   const formData = new FormData();
   formData.append('prompt', params.prompt);
   formData.append('image', imageBlob, 'image.png');
@@ -49,10 +47,6 @@ async function editOpenAI(
     headers: { Authorization: `Bearer ${apiKey}` },
     body: formData,
   });
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`OpenAI Edit API error: ${response.status} - ${error}`);
-  }
 
   const data = await response.json();
   return {
@@ -73,8 +67,8 @@ async function editStability(
   apiKey: string,
   providerBaseUrl: string,
 ) {
-  const imageBlob = base64ToBlob(params.image);
-  const maskBlob = params.mask ? base64ToBlob(params.mask) : undefined;
+  const imageBlob = await resolveImageBlob(params.image);
+  const maskBlob = params.mask ? await resolveImageBlob(params.mask) : undefined;
   const formData = new FormData();
   formData.append('prompt', params.prompt);
   if (params.negativePrompt) {
@@ -95,10 +89,6 @@ async function editStability(
       body: formData,
     },
   );
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Stability Inpaint API error: ${response.status} - ${error}`);
-  }
 
   const buffer = await response.arrayBuffer();
   return {
@@ -108,7 +98,6 @@ async function editStability(
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
     const {
       providerId,
       providerName,
@@ -121,39 +110,21 @@ export async function POST(req: NextRequest) {
       n,
       negativePrompt,
       apiKey,
-    } = body as {
-      providerId?: string;
-      providerName?: string;
-      modelId?: string;
-      prompt?: string;
-      image?: string;
-      mask?: string;
-      size?: string;
-      quality?: string;
-      n?: number;
-      negativePrompt?: string;
-      apiKey?: string;
-    };
-
-    if (!modelId || !prompt || !image) {
-      return NextResponse.json(
-        { error: 'modelId, prompt, and image are required' },
-        { status: 400 },
-      );
-    }
-    if (!apiKey) {
-      return NextResponse.json(
-        { error: 'API key is required. Please configure your API key in Settings.' },
-        { status: 400 },
-      );
-    }
+    } = await parseGenerationRequest(
+      req,
+      editGenerationRequestSchema,
+      MAX_EDIT_REQUEST_BYTES,
+    );
 
     let provider = providerId ? getProviderById(providerId) : null;
     if (!provider && providerName) {
       provider = PROVIDERS.find((candidate) => candidate.name === providerName) || null;
     }
     if (!provider) {
-      return NextResponse.json({ error: 'Provider not found' }, { status: 404 });
+      return noStoreJson({
+        error: 'Provider not found',
+        code: 'provider_not_found',
+      }, 404);
     }
 
     requireModelOperation(
@@ -180,28 +151,17 @@ export async function POST(req: NextRequest) {
         )).images;
         break;
       default:
-        return NextResponse.json(
-          { error: `Image editing is not supported for ${provider.displayName}` },
-          { status: 400 },
-        );
+        return noStoreJson({
+          error: `Image editing is not supported for ${provider.displayName}`,
+          code: 'adapter_not_configured',
+        }, 400);
     }
 
-    return NextResponse.json(
-      { status: 'completed', images },
-      { headers: { 'Cache-Control': 'no-store' } },
-    );
+    return noStoreJson({ status: 'completed', images });
   } catch (error) {
-    if (error instanceof GenerationRegistryError) {
-      return NextResponse.json(
-        { error: error.message, code: error.code },
-        { status: error.status },
-      );
-    }
-
-    console.error('Edit image error:', error);
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to edit image' },
-      { status: 500 },
-    );
+    return generationErrorResponse(error, {
+      logLabel: 'Edit image error',
+      fallbackMessage: 'Failed to edit image',
+    });
   }
 }
