@@ -1,23 +1,23 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 
 import { encodeGenerationJobToken } from '@/lib/generation-job';
 import { PROVIDERS } from '@/lib/providers-data';
+import { requireModelOperation } from '@/lib/generation-registry';
 import {
-  GenerationRegistryError,
-  requireModelOperation,
-} from '@/lib/generation-registry';
+  imageToVideoGenerationRequestSchema,
+  MAX_SINGLE_IMAGE_REQUEST_BYTES,
+  parseGenerationRequest,
+} from '@/lib/server/generation-request';
+import {
+  generationErrorResponse,
+  noStoreJson,
+} from '@/lib/server/generation-response';
+import { providerFetch as fetch } from '@/lib/server/provider-request';
 
 export const runtime = 'nodejs';
 
 function getProviderById(id: string) {
   return PROVIDERS.find((provider) => provider.id === id);
-}
-
-function json(payload: Record<string, unknown>, status = 200) {
-  return NextResponse.json(payload, {
-    status,
-    headers: { 'Cache-Control': 'no-store' },
-  });
 }
 
 function runwayRatio(aspectRatio?: string): string {
@@ -55,7 +55,7 @@ async function img2vidRunway(
     model: params.model,
     promptText: params.prompt,
     promptImage: params.imageUrl,
-    duration: params.duration,
+    duration: Math.min(10, Math.max(3, params.duration)),
     ratio: runwayRatio(params.aspectRatio),
   };
 
@@ -68,10 +68,6 @@ async function img2vidRunway(
     },
     body: JSON.stringify(body),
   });
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Runway img2vid API error: ${response.status} - ${error}`);
-  }
 
   const data = await response.json();
   if (!data.id) throw new Error('Runway did not return a task id');
@@ -116,10 +112,6 @@ async function img2vidLuma(
       body: JSON.stringify(body),
     },
   );
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Luma img2vid API error: ${response.status} - ${error}`);
-  }
 
   const data = await response.json();
   if (!data.id) throw new Error('Luma did not return a generation id');
@@ -156,10 +148,6 @@ async function img2vidFal(
     },
     body: JSON.stringify(body),
   });
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Fal.ai img2vid API error: ${response.status} - ${error}`);
-  }
 
   const data = await response.json();
   if (!data.request_id) throw new Error('Fal.ai did not return a request id');
@@ -168,7 +156,6 @@ async function img2vidFal(
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
     const {
       providerId,
       modelId,
@@ -177,25 +164,19 @@ export async function POST(req: NextRequest) {
       apiKey,
       duration,
       aspectRatio,
-    } = body as {
-      providerId?: string;
-      modelId?: string;
-      imageUrl?: string;
-      prompt?: string;
-      apiKey?: string;
-      duration?: number;
-      aspectRatio?: string;
-    };
-
-    if (!providerId || !modelId || !imageUrl || !prompt) {
-      return json({
-        error: 'providerId, modelId, imageUrl, and prompt are required',
-      }, 400);
-    }
-    if (!apiKey) return json({ error: 'API key is required' }, 400);
+    } = await parseGenerationRequest(
+      req,
+      imageToVideoGenerationRequestSchema,
+      MAX_SINGLE_IMAGE_REQUEST_BYTES,
+    );
 
     const provider = getProviderById(providerId);
-    if (!provider) return json({ error: 'Provider not found' }, 404);
+    if (!provider) {
+      return noStoreJson({
+        error: 'Provider not found',
+        code: 'provider_not_found',
+      }, 404);
+    }
 
     requireModelOperation(
       provider.name,
@@ -204,7 +185,6 @@ export async function POST(req: NextRequest) {
       'img2vid',
     );
 
-    const videoDuration = Math.max(3, Math.min(10, duration || 5));
     let pollingModelId = modelId;
     let result: { jobId: string; status: 'processing' };
 
@@ -213,7 +193,7 @@ export async function POST(req: NextRequest) {
         result = await img2vidRunway({
           prompt,
           model: modelId,
-          duration: videoDuration,
+          duration,
           imageUrl,
           aspectRatio,
         }, apiKey);
@@ -224,7 +204,7 @@ export async function POST(req: NextRequest) {
           imageUrl,
           aspectRatio,
           model: modelId,
-          duration: videoDuration,
+          duration,
         }, apiKey);
         break;
       case 'fal': {
@@ -234,14 +214,15 @@ export async function POST(req: NextRequest) {
           prompt,
           endpoint,
           imageUrl,
-          duration: videoDuration,
+          duration,
           aspectRatio,
         }, apiKey);
         break;
       }
       default:
-        return json({
+        return noStoreJson({
           error: `No registered image-to-video adapter is available for ${provider.displayName}.`,
+          code: 'adapter_not_configured',
         }, 400);
     }
 
@@ -252,7 +233,7 @@ export async function POST(req: NextRequest) {
       kind: 'video',
     });
 
-    return json({
+    return noStoreJson({
       id: localJobId,
       jobId: localJobId,
       localJob: true,
@@ -260,13 +241,9 @@ export async function POST(req: NextRequest) {
       message: 'Image-to-video generation in progress. Poll /api/generate/status for results.',
     });
   } catch (error) {
-    if (error instanceof GenerationRegistryError) {
-      return json({ error: error.message, code: error.code }, error.status);
-    }
-
-    console.error('img2vid error:', error);
-    return json({
-      error: error instanceof Error ? error.message : 'Failed to generate video from image',
-    }, 500);
+    return generationErrorResponse(error, {
+      logLabel: 'Image-to-video error',
+      fallbackMessage: 'Failed to generate video from image',
+    });
   }
 }
