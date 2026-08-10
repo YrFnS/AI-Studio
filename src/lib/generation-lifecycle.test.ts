@@ -144,7 +144,10 @@ describe('typed generation lifecycle', () => {
         };
       },
       completeImpl: async (generation, urls, providerJobId) => {
-        completed.push({ urls: [...urls], providerJobId });
+        completed.push({
+          urls: urls.filter((url): url is string => Boolean(url)),
+          providerJobId,
+        });
         return [generation.id];
       },
     }));
@@ -224,7 +227,7 @@ describe('typed generation lifecycle', () => {
       pollImpl: async (_request, options) => {
         startPolling?.();
         return await new Promise((_, reject) => {
-          options.signal?.addEventListener('abort', () => {
+          options?.signal?.addEventListener('abort', () => {
             reject(new GenerationPollingError('Generation polling was cancelled', {
               code: 'aborted',
             }));
