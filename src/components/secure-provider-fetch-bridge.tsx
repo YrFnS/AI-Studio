@@ -41,12 +41,14 @@ function jsonError(message: string, status: number): Response {
 }
 
 /**
- * Transitional compatibility layer for existing generation clients.
+ * Transitional compatibility layer for generation callers that have not yet
+ * migrated to the explicit generation client.
  *
- * It keeps provider keys out of status-query URLs, injects the locally stored
- * key when an older caller omits it, and forwards polling through the secure
- * POST status contract. New generation code should call the POST contract
- * directly, but this bridge protects every current studio surface meanwhile.
+ * The bridge injects locally stored provider keys into generation requests and
+ * converts legacy GET status calls into POST requests before they reach the
+ * network. Stateless job tokens contain provider job metadata but never contain
+ * provider credentials, so legacy pollers must forward their locally held key
+ * in the POST body.
  */
 export function SecureProviderFetchBridge() {
   useEffect(() => {
@@ -66,19 +68,26 @@ export function SecureProviderFetchBridge() {
       const method = getRequestMethod(input, init);
       const pathname = requestUrl.pathname;
 
-      // Existing pollers still construct a GET URL containing the API key.
-      // Intercept it before any network request is made and replace it with a
-      // POST body containing only the local job token (or a legacy context).
+      // Some older callers still construct a GET URL containing the API key.
+      // This URL is intercepted in memory; the native network request is a POST
+      // and therefore does not expose the key in request URLs or proxy logs.
       if (pathname === '/api/generate/status' && method === 'GET') {
         const id = requestUrl.searchParams.get('id');
         if (!id) return jsonError('Generation id is required', 400);
 
         const legacyContext = legacyJobs.get(id);
+        const queryApiKey = requestUrl.searchParams.get('apiKey') || undefined;
+        const queryProvider = requestUrl.searchParams.get('provider') || undefined;
+        const queryModelId = requestUrl.searchParams.get('modelId') || undefined;
+
         const response = await originalFetch('/api/generate/status', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             id,
+            ...(queryProvider ? { provider: queryProvider } : {}),
+            ...(queryModelId ? { modelId: queryModelId } : {}),
+            ...(queryApiKey ? { apiKey: queryApiKey } : {}),
             ...(legacyContext ?? {}),
           }),
         });
@@ -129,9 +138,9 @@ export function SecureProviderFetchBridge() {
                   ? data.jobId
                   : null;
 
-            // New routes return an opaque local token and retain the provider
-            // key only in the local server process. Keep context only for older
-            // async routes until they are migrated to that registry.
+            // Keep provider context only for older routes that still return a
+            // raw provider job id. Stateless local jobs encode this metadata in
+            // their token and need only the locally stored key during polling.
             if (
               data.status === 'processing' &&
               jobId &&
