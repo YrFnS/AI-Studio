@@ -83,7 +83,7 @@ Make generation submission, polling, persistence, recovery, and cancellation det
 ### Image editing and derived-action migration
 
 - Added `src/lib/generation-operation.ts` as a typed operation planner for edit, inpaint, upscale, variation, improve, and image-to-video actions.
-- The planner resolves a compatible provider/model/operation target before submission and builds the dedicated route contract for that operation.
+- The planner resolves a currently declared compatible provider/model/operation target before submission and builds the dedicated route contract for that operation.
 - Derived request bodies remain credential-free; the explicit client injects the selected provider key only for the local route call.
 - Image-to-video no longer blindly sends the active image model to a video endpoint. It selects a connected provider with a declared `i2v` video model and reports the selected target to the user.
 - Image Studio post-generation actions now use lifecycle handles for submission, polling, queue updates, persistence, cancellation, and page detachment.
@@ -152,8 +152,8 @@ Automated coverage now includes:
 
 ### Full typed provider operation registry
 
-- Promote the operation planner into the authoritative `provider + model + operation` registry for every generation route and selector.
-- Hide every model/operation combination without an executable and tested adapter.
+- Promote the provisional operation planner into the authoritative `provider + model + operation` registry for every generation route and selector.
+- Verify every declared model/operation pair against its real provider contract and hide combinations without an executable, tested adapter.
 - Add adapter verification metadata and separate text-to-image, image-to-image, edit, inpaint, variation, upscale, text-to-video, and image-to-video contracts.
 - Remove the remaining provider-wide capability heuristics once every caller consumes the registry.
 
