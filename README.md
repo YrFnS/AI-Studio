@@ -6,23 +6,24 @@ AI Studio is a local-first, multi-provider workspace for AI image and video gene
 
 - **No external database** — there is no PostgreSQL, SQLite, Prisma, Supabase, or hosted database requirement.
 - **UI-managed provider keys** — users add and remove keys from the web interface; provider keys are not configured through `.env` files.
-- **Browser persistence** — keys, generations, prompts, collections, reference images, and custom models are stored in IndexedDB.
+- **Browser persistence** — keys, generations, prompts, collections, reference images, and custom model definitions are stored in IndexedDB.
 - **Explicit generation client** — every browser module that submits or polls generation work imports the shared client directly; AI Studio does not replace `window.fetch` globally.
 - **Typed generation lifecycle** — primary studios, model comparison, editing, and derived actions share one submit, poll, persist, queue, cancellation, and recovery contract.
-- **Operation-aware routing** — edit, inpaint, upscale, variation, improve, and image-to-video actions resolve a currently declared compatible provider/model target before submission instead of reusing the current model blindly. P0 still tracks contract-by-contract verification of those declarations.
+- **Authoritative operation registry** — every executable provider/model/operation combination declares its owning route, adapter, and verification level. Raw catalog capability labels cannot make a model executable.
+- **Operation-aware selectors** — text-to-image, image-to-image, edit, inpaint, variation, upscale, text-to-video, and image-to-video each expose only models registered for that exact operation.
 - **Local provider proxy** — Next.js routes running on the same machine translate requests to each provider's API format.
 - **No persistent server-side credentials** — provider keys are not written to a server database or configuration file.
 - **Stateless async polling** — long-running jobs return credential-free tokens containing only provider job metadata; polling sends the locally stored key in a POST body.
 
 ## Features
 
-- **Image Studio** — text-to-image, image-to-image, editing, inpainting, variations, upscaling, style controls, and advanced parameters
-- **Video Studio** — text-to-video and image-to-video through supported provider adapters
+- **Image Studio** — text-to-image, registered image-to-image models, editing, inpainting, variations, upscaling, style controls, and advanced parameters
+- **Video Studio** — text-to-video and image-to-video through registered provider adapters
 - **Cinema Studio** — camera, lens, focal length, aperture, film stock, color grade, lighting, and scene presets
 - **Gallery** — search, favorites, timeline views, metadata, and collections
 - **Prompt tools** — history, templates, suggestions, quick starters, and a structured prompt builder
 - **Model comparison** — run supported image models side by side
-- **Custom and discovered models** — combine the built-in catalog with locally saved and dynamically discovered entries
+- **Custom and discovered model definitions** — save local definitions for review; they are not executable until an operation contract is registered
 - **Generation queue** — monitor asynchronous work without blocking the studio
 - **Keyboard shortcuts** — fast navigation and generation controls
 
@@ -77,7 +78,7 @@ bun run check
 - Prompt history and saved prompts
 - Collections and collection membership
 - Reference images and thumbnails
-- Custom models and cached model discovery results
+- Custom model definitions and cached model discovery results
 
 Clearing this site's browser storage removes this locally persisted data.
 
@@ -87,9 +88,17 @@ Every browser generation caller imports `generationFetch` from `src/lib/generati
 
 `src/lib/generation-lifecycle.ts` owns the durable lifecycle for new work and interrupted work: creation, submission, asynchronous polling, queue updates, completion or failure persistence, local cancellation, page detachment, and recovery. Immediate provider results and asynchronous jobs therefore use the same terminal path.
 
-For editing and derived actions, `src/lib/generation-operation.ts` selects a declared compatible operation target and builds the dedicated edit, upscale, variation, or image-to-video request. The request body remains credential-free until the explicit client injects the matching locally stored provider key. Image-to-video can select a connected video provider rather than sending an image model identifier to a video endpoint. These rules are provisional until each model/operation pair completes the P0 live-contract verification gate.
+`src/lib/generation-registry.ts` is the executable source of truth. A model must have a contract for the exact operation and route before it can appear in generation selectors or reach a provider. Each contract records an adapter ID and one of three verification levels:
 
-When a user starts a generation, the local Next.js route calls the selected provider. The key is used for that request but is not persisted in a server-side database.
+- `adapter-implemented` — code exists and automated contract coverage passes
+- `contract-reviewed` — the adapter has also been checked against provider documentation
+- `live-verified` — an owner-supplied-key smoke test has been recorded
+
+No contract is promoted to `live-verified` without manual evidence.
+
+For editing and derived actions, `src/lib/generation-operation.ts` consumes these registry contracts and builds the dedicated edit, upscale, variation, or image-to-video request. The request body remains credential-free until the explicit client injects the matching locally stored provider key. Image-to-video selects a connected video model registered for that operation rather than sending an image model identifier to a video endpoint.
+
+When a user starts a generation, the local Next.js route calls `requireModelOperation` before contacting the selected provider. Unsupported models, operations, or route combinations fail locally with a clear error.
 
 For asynchronous providers, the submission route returns a stateless token containing the provider name, model ID, provider job ID, and media kind. The token never includes the provider API key. Each status request is a POST that supplies the token and reads the provider key again from IndexedDB. This allows polling to continue after the local Next.js process restarts without storing provider credentials in process memory.
 
@@ -99,19 +108,19 @@ Some authenticated provider outputs still use short-lived protected-media tokens
 
 ## Provider support
 
-The provider endpoint exposes only model/provider combinations that have a matching executable adapter. The catalog can still contain additional definitions for future work, but unsupported combinations are hidden from generation selectors.
+`/api/providers` filters the static catalog through the authoritative registry. A catalog entry may remain available for future work or settings metadata without being exposed as an executable model.
 
-The verified video catalog currently includes:
+The currently registered video model families include:
 
 - Replicate — Seedance 2.0
 - fal — Seedance 2.0 and Seedance 2.0 Fast
-- Runway — Gen-4.5 and Gen-4 Turbo
+- Runway — Gen-4.5 and Gen-4 Turbo, with operation-specific availability
 - Luma — Ray 2 and Ray 2 Flash
 - Google AI Studio — Veo 3.1 and Veo 3.1 Fast
 
-Image support includes the providers implemented in `src/app/api/generate/handlers.ts` and filtered by `src/lib/provider-capabilities.ts`.
+Image, editing, variation, and upscale support is defined per model in `src/lib/generation-registry.ts`, not by provider-wide capability flags. The live-verification state for each contract remains part of the P0 completion gate.
 
-Operation-aware editing and derived actions currently use the compatibility rules in `src/lib/generation-operation.ts`. P0 tracks the remaining work to verify those rules against live provider contracts and promote them into the authoritative registry used by every model selector and generation route.
+Custom or dynamically discovered models are never merged directly into Image, Video, or Cinema generation selectors. A reviewed registry entry and executable adapter are required first.
 
 ## Project structure
 
@@ -119,12 +128,12 @@ Operation-aware editing and derived actions currently use the compatibility rule
 src/
 ├── app/
 │   ├── api/
-│   │   ├── generate/             # Provider submission, polling, editing, and media proxy routes
+│   │   ├── generate/             # Registry-validated submission, polling, editing, and media routes
 │   │   ├── keys/                 # Provider-key connection tests
 │   │   ├── models/               # Model catalog and discovery endpoints
 │   │   ├── prompt-suggestions/   # Prompt assistance
 │   │   ├── prompt-templates/     # Curated templates
-│   │   └── providers/            # Executable provider/model listing
+│   │   └── providers/            # Registry-filtered provider/model listing
 │   ├── globals.css
 │   ├── layout.tsx
 │   └── page.tsx
@@ -137,11 +146,13 @@ src/
     ├── generation-client.ts      # Explicit browser transport and key injection
     ├── generation-job.ts         # Credential-free stateless async job tokens
     ├── generation-lifecycle.ts   # Submit, poll, persist, queue, cancel, and resume lifecycle
-    ├── generation-operation.ts   # Provisional operation-aware provider/model request planning
+    ├── generation-operation.ts   # Derived-action planning from registry contracts
     ├── generation-poller.ts      # Shared resilient polling policy
+    ├── generation-registry.ts    # Provider/model/operation/route/adapter source of truth
     ├── idb.ts                    # Browser persistence
-    ├── provider-capabilities.ts  # Executable adapter matrix
+    ├── provider-capabilities.ts  # Provider media-kind summary derived from the registry
     ├── providers-data.ts         # Static provider and model definitions
+    ├── server/replicate.ts       # Official-model and immutable-version Replicate routing
     ├── server-generation-store.ts # Temporary compatibility for legacy jobs
     └── server-media-store.ts     # Temporary authenticated-media proxy context
 ```
