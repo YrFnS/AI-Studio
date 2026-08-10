@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 
 import type { GenerateParams } from '@/lib/types';
+import { encodeGenerationJobToken } from '@/lib/generation-job';
 import { PROVIDERS } from '@/lib/providers-data';
 import { supportsGeneration } from '@/lib/provider-capabilities';
-import { registerGenerationJob } from '@/lib/server-generation-store';
 import {
   generateOpenAI,
   generateStability,
@@ -182,11 +182,11 @@ export async function POST(req: NextRequest) {
     }
 
     if (!Array.isArray(result) && 'jobId' in result) {
-      const localJobId = registerGenerationJob({
-        provider: provider.name,
-        providerJobId: result.jobId,
+      const localJobId = encodeGenerationJobToken({
+        providerId: provider.name,
+        jobId: result.jobId,
         modelId,
-        apiKey,
+        kind: 'image',
       });
 
       return NextResponse.json({
