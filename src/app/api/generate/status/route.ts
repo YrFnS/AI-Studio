@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 
+import { decodeGenerationJobToken } from '@/lib/generation-job';
 import {
   deleteGenerationJob,
   getGenerationJob,
@@ -251,31 +252,43 @@ async function pollProvider(job: GenerationJobContext) {
 }
 
 export async function POST(req: NextRequest) {
-  let localToken: string | null = null;
+  let storedToken: string | null = null;
 
   try {
     const body = (await req.json()) as { id?: string } & LegacyStatusContext;
     if (!body.id) return jsonResponse({ error: 'id is required' }, 400);
 
-    localToken = body.id;
     const storedJob = getGenerationJob(body.id);
-    const job: GenerationJobContext | null = storedJob ?? (
-      body.provider && body.apiKey
-        ? {
-            provider: body.provider,
-            providerJobId: body.id,
-            modelId: body.modelId,
-            apiKey: body.apiKey,
-            createdAt: Date.now(),
-          }
-        : null
-    );
+    if (storedJob) storedToken = body.id;
+
+    const decodedJob = decodeGenerationJobToken(body.id);
+    const statelessJob: GenerationJobContext | null = decodedJob && body.apiKey
+      ? {
+          provider: decodedJob.providerId,
+          providerJobId: decodedJob.jobId,
+          modelId: decodedJob.modelId,
+          apiKey: body.apiKey,
+          createdAt: Date.now(),
+        }
+      : null;
+
+    const legacyJob: GenerationJobContext | null = body.provider && body.apiKey
+      ? {
+          provider: body.provider,
+          providerJobId: body.id,
+          modelId: body.modelId,
+          apiKey: body.apiKey,
+          createdAt: Date.now(),
+        }
+      : null;
+
+    const job = storedJob ?? statelessJob ?? legacyJob;
 
     if (!job) {
-      return jsonResponse(
-        { status: 'failed', error: 'Generation job context is unavailable. Start the generation again.' },
-        404,
-      );
+      const error = decodedJob && !body.apiKey
+        ? 'The provider API key is required to poll this generation. Reconnect the provider and try again.'
+        : 'Generation job context is unavailable. Start the generation again.';
+      return jsonResponse({ status: 'failed', error }, 404);
     }
 
     const result = await pollProvider(job);
@@ -285,8 +298,8 @@ export async function POST(req: NextRequest) {
 
     return jsonResponse(result);
   } catch (error) {
-    if (localToken && error instanceof PermanentStatusError) {
-      deleteGenerationJob(localToken);
+    if (storedToken && error instanceof PermanentStatusError) {
+      deleteGenerationJob(storedToken);
       return jsonResponse({ status: 'failed', error: error.message });
     }
 
