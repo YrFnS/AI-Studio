@@ -65,6 +65,18 @@ Make generation submission, polling, and browser persistence deterministic befor
 - Added a visible **Cancel generation** control. Local cancellation is idempotent, persists a terminal cancelled record, and updates the queue without duplicate writes.
 - Added `image-studio-lifecycle.test.ts` to prevent the component-owned polling and queue path from being reintroduced.
 
+### Video Studio lifecycle migration
+
+- Primary Video Studio generation now runs through `startGenerationJob` rather than a component-owned submission and five-second polling loop.
+- Immediate and asynchronous video results share one lifecycle completion path and return the durable Gallery ID used by Favorite.
+- The lifecycle owns global queue insertion and terminal queue updates through the Zustand queue port.
+- Removed Video Studio's local status interval, raw provider-job state, manual persistence calls, and duplicated immediate/async cleanup branches.
+- Video Studio no longer places a provider key in its request body; the explicit generation client injects the matching IndexedDB key only for the local provider request.
+- Navigating away detaches page ownership without falsely failing the provider job, allowing startup recovery to resume it.
+- Added a visible **Cancel generation** control with idempotent local cancellation, terminal persistence, and queue cleanup.
+- The loading state now explains that the job remains recoverable after navigation or a local app restart.
+- Added `video-studio-lifecycle.test.ts` to prevent the component-owned polling and manual queue path from being reintroduced.
+
 ### Stateless async jobs
 
 - Image, video, upscale, variation, and image-to-video routes now return `aistudio-job.*` tokens.
@@ -115,16 +127,17 @@ Make generation submission, polling, and browser persistence deterministic befor
 - Explicit-client tests cover native pass-through, key injection, explicit-key preservation, GET-to-POST conversion, IndexedDB key recovery, and terminal invalid requests.
 - Lifecycle tests cover immediate completion, asynchronous polling, queue ownership, submission failure, idempotent cancellation, snapshot transitions, and non-terminal missing-key recovery.
 - Image Studio coverage verifies lifecycle ownership, page-detachment signaling, the cancellation path, and removal of its legacy interval and manual queue path.
+- Video Studio coverage verifies lifecycle ownership, page-detachment signaling, the cancellation path, and removal of its legacy interval and manual queue path.
 - The coverage test prevents a new browser generation caller from bypassing the explicit client.
 
 ## Remaining P0 work
 
 ### Generation lifecycle consolidation
 
-- Move Video Studio, Cinema Studio, image editing, and post-generation actions onto `startGenerationJob` lifecycle handles.
+- Move Cinema Studio, image editing, and post-generation actions onto `startGenerationJob` lifecycle handles.
 - Remove their duplicated queue, persistence, completion, failure, and fixed-interval timer code after each migration.
-- Connect primary Video and Cinema lifecycle handles to the global generation queue port.
-- Add provider-side cancellation adapters where supported; Image Studio currently provides local lifecycle cancellation only.
+- Connect the primary Cinema lifecycle handle to the global generation queue port.
+- Add provider-side cancellation adapters where supported; Image and Video Studio currently provide local lifecycle cancellation only.
 - Add a visible recovery state for jobs waiting on a missing provider key.
 
 ### Protected media
