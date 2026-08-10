@@ -251,7 +251,7 @@ export function useModelCompare(
         if (runIdRef.current !== runId) return;
         if (
           error instanceof GenerationLifecycleError
-          && error.code === 'detached'
+          && (error.code === 'detached' || error.code === 'cancelled')
         ) {
           return;
         }
