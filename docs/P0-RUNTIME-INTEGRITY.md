@@ -137,7 +137,7 @@ Automated coverage now includes:
 - Unsupported edit-provider rejection.
 - Prevention of the duplicate Cinema scene suffix.
 
-The permanent branch passed GitHub Actions CI run **#193** after the implementation and documentation cleanup:
+The permanent branch passed GitHub Actions CI after the implementation and documentation cleanup:
 
 - `bun install --frozen-lockfile`
 - `bun run typecheck`
