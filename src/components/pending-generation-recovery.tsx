@@ -4,20 +4,15 @@ import { useEffect } from 'react';
 import { toast } from 'sonner';
 
 import {
-  getApiKeyForProvider,
   getGenerations,
   updateGeneration,
   type GenerationRecord,
 } from '@/lib/idb';
 import {
-  completeGeneration,
-  failGeneration,
-  type GenerationDescriptor,
-} from '@/lib/generation-persistence';
-import {
-  GenerationPollingError,
-  pollGenerationJob,
-} from '@/lib/generation-poller';
+  GenerationLifecycleError,
+  resumeGenerationJob,
+} from '@/lib/generation-lifecycle';
+import type { GenerationDescriptor } from '@/lib/generation-persistence';
 
 const MAX_RECOVERY_JOBS = 20;
 const RECOVERY_CONCURRENCY = 3;
@@ -63,13 +58,7 @@ async function runWithConcurrency<T>(
       while (nextIndex < items.length) {
         const index = nextIndex;
         nextIndex += 1;
-        try {
-          await worker(items[index]);
-        } catch (error) {
-          // One corrupt record or IndexedDB failure must not prevent the other
-          // interrupted jobs from receiving a recovery attempt.
-          console.error('Generation recovery worker failed', error);
-        }
+        await worker(items[index]);
       }
     },
   );
@@ -93,57 +82,30 @@ export function PendingGenerationRecovery() {
     const recover = async (record: GenerationRecord) => {
       if (!record.providerJobId || controller.signal.aborted) return;
 
-      const apiKey = await getApiKeyForProvider(record.providerId);
-      if (!apiKey) {
-        await updateGeneration(record.id, {
-          error: 'Reconnect this provider to resume the interrupted generation.',
-        });
-        return;
-      }
-
-      const descriptor = toDescriptor(record);
+      const handle = resumeGenerationJob({
+        descriptor: toDescriptor(record),
+        providerJobId: record.providerJobId,
+        signal: controller.signal,
+        preserveOnMissingApiKey: true,
+        pollPolicy: {
+          maxElapsedMs: recoveryTimeout(record),
+          maxConsecutiveErrors: 6,
+        },
+      });
 
       try {
-        const payload = await pollGenerationJob(
-          {
-            id: record.providerJobId,
-            apiKey,
-            provider: record.providerId,
-            modelId: record.modelId,
-          },
-          {
-            signal: controller.signal,
-            startedAtMs: record.createdAt,
-            policy: {
-              maxElapsedMs: recoveryTimeout(record),
-              maxConsecutiveErrors: 6,
-            },
-          },
-        );
-
-        const urls = payload.urls?.length
-          ? payload.urls
-          : payload.resultUrl
-            ? [payload.resultUrl]
-            : [];
-        const ids = await completeGeneration(
-          descriptor,
-          urls,
-          record.providerJobId,
-        );
-        if (ids.length > 0) recoveredCount += 1;
+        const result = await handle.result;
+        if (result.generationIds.length > 0) recoveredCount += 1;
       } catch (error) {
-        if (
-          error instanceof GenerationPollingError
-          && error.code === 'aborted'
-        ) {
-          return;
+        if (error instanceof GenerationLifecycleError) {
+          if (error.code === 'detached') return;
+          if (error.code === 'missing-api-key') {
+            await updateGeneration(record.id, {
+              error: 'Reconnect this provider to resume the interrupted generation.',
+            });
+            return;
+          }
         }
-
-        const message = error instanceof Error
-          ? error.message
-          : 'Interrupted generation could not be recovered';
-        await failGeneration(descriptor, message, record.providerJobId);
         failedCount += 1;
       }
     };
@@ -207,6 +169,8 @@ export function PendingGenerationRecovery() {
 
     void startRecovery();
 
+    // External abort detaches lifecycle handles without marking jobs failed;
+    // the next browser session can resume them again from IndexedDB.
     return () => controller.abort();
   }, []);
 
