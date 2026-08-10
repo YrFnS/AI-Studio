@@ -2,6 +2,10 @@
 
 import { useEffect } from 'react';
 
+import {
+  createGenerationStatusCoordinator,
+  type GenerationStatusRequest,
+} from '@/lib/generation-poller';
 import { getApiKeyForProvider } from '@/lib/idb';
 
 interface LegacyJobContext {
@@ -33,28 +37,105 @@ function getRequestMethod(input: RequestInfo | URL, init?: RequestInit): string 
   return 'GET';
 }
 
-function jsonError(message: string, status: number): Response {
-  return new Response(JSON.stringify({ error: message }), {
-    status,
-    headers: { 'Content-Type': 'application/json' },
-  });
+function getRequestHeaders(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Headers {
+  if (init?.headers) return new Headers(init.headers);
+  if (typeof Request !== 'undefined' && input instanceof Request) {
+    return new Headers(input.headers);
+  }
+  return new Headers();
+}
+
+async function readJsonRequestBody(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+): Promise<Record<string, unknown> | null> {
+  try {
+    if (typeof init?.body === 'string') {
+      const parsed = JSON.parse(init.body) as unknown;
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? parsed as Record<string, unknown>
+        : null;
+    }
+
+    if (typeof Request !== 'undefined' && input instanceof Request) {
+      const contentType = input.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        const parsed = await input.clone().json() as unknown;
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+          ? parsed as Record<string, unknown>
+          : null;
+      }
+    }
+  } catch {
+    // Leave malformed request handling to the original route.
+  }
+
+  return null;
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0
+    ? value
+    : undefined;
+}
+
+function statusRequestFromBody(
+  body: Record<string, unknown>,
+): GenerationStatusRequest | null {
+  const id = asString(body.id);
+  if (!id) return null;
+
+  return {
+    id,
+    apiKey: asString(body.apiKey),
+    provider: asString(body.provider),
+    modelId: asString(body.modelId),
+  };
+}
+
+function failedResponse(message: string): Response {
+  return new Response(
+    JSON.stringify({ status: 'failed', error: message }),
+    {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/json',
+        'Cache-Control': 'no-store',
+      },
+    },
+  );
 }
 
 /**
  * Transitional compatibility layer for generation callers that have not yet
- * migrated to the explicit generation client.
+ * migrated to the explicit resilient polling client.
  *
- * The bridge injects locally stored provider keys into generation requests and
- * converts legacy GET status calls into POST requests before they reach the
- * network. Stateless job tokens contain provider job metadata but never contain
- * provider credentials, so legacy pollers must forward their locally held key
- * in the POST body.
+ * All existing studios now share the same retry, backoff, timeout, and terminal
+ * error policy through this bridge. Newly migrated callers mark their POST with
+ * `x-ai-studio-poll-client: resilient` and bypass the compatibility coordinator
+ * because they already own their polling loop directly.
  */
 export function SecureProviderFetchBridge() {
   useEffect(() => {
     const nativeFetch = window.fetch;
     const originalFetch = nativeFetch.bind(window);
     const legacyJobs = new Map<string, LegacyJobContext>();
+    const statusCoordinator = createGenerationStatusCoordinator();
+
+    const finishLegacyJob = async (id: string, response: Response) => {
+      try {
+        const data = await response.clone().json();
+        if (data.status === 'completed' || data.status === 'failed') {
+          legacyJobs.delete(id);
+        }
+      } catch {
+        // The original caller handles malformed responses.
+      }
+      return response;
+    };
 
     const secureFetchImplementation = async (
       input: RequestInfo | URL,
@@ -67,47 +148,61 @@ export function SecureProviderFetchBridge() {
 
       const method = getRequestMethod(input, init);
       const pathname = requestUrl.pathname;
+      const headers = getRequestHeaders(input, init);
 
-      // Some older callers still construct a GET URL containing the API key.
-      // This URL is intercepted in memory; the native network request is a POST
-      // and therefore does not expose the key in request URLs or proxy logs.
-      if (pathname === '/api/generate/status' && method === 'GET') {
-        const id = requestUrl.searchParams.get('id');
-        if (!id) return jsonError('Generation id is required', 400);
-
-        const legacyContext = legacyJobs.get(id);
-        const queryApiKey = requestUrl.searchParams.get('apiKey') || undefined;
-        const queryProvider = requestUrl.searchParams.get('provider') || undefined;
-        const queryModelId = requestUrl.searchParams.get('modelId') || undefined;
-
-        const response = await originalFetch('/api/generate/status', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            id,
-            ...(queryProvider ? { provider: queryProvider } : {}),
-            ...(queryModelId ? { modelId: queryModelId } : {}),
-            ...(queryApiKey ? { apiKey: queryApiKey } : {}),
-            ...(legacyContext ?? {}),
-          }),
-        });
-
-        try {
-          const data = await response.clone().json();
-          if (data.status === 'completed' || data.status === 'failed') {
-            legacyJobs.delete(id);
-          }
-        } catch {
-          // The caller will handle malformed responses.
+      if (pathname === '/api/generate/status') {
+        // The shared poller already applies its own retry policy. Passing these
+        // requests through avoids stacking two independent backoff loops.
+        if (headers.get('x-ai-studio-poll-client') === 'resilient') {
+          return originalFetch(input, init);
         }
 
-        return response;
+        if (method === 'GET') {
+          const id = requestUrl.searchParams.get('id');
+          if (!id) return failedResponse('Generation id is required');
+
+          const legacyContext = legacyJobs.get(id);
+          const request: GenerationStatusRequest = {
+            id,
+            apiKey:
+              requestUrl.searchParams.get('apiKey')
+              || legacyContext?.apiKey,
+            provider:
+              requestUrl.searchParams.get('provider')
+              || legacyContext?.provider,
+            modelId:
+              requestUrl.searchParams.get('modelId')
+              || legacyContext?.modelId,
+          };
+
+          const response = await statusCoordinator.check(
+            request,
+            originalFetch,
+          );
+          return finishLegacyJob(id, response);
+        }
+
+        if (method === 'POST') {
+          const body = await readJsonRequestBody(input, init);
+          if (!body) {
+            return failedResponse('Generation status body must be valid JSON');
+          }
+
+          const request = statusRequestFromBody(body);
+          if (!request) return failedResponse('Generation id is required');
+
+          const response = await statusCoordinator.check(
+            request,
+            originalFetch,
+          );
+          return finishLegacyJob(request.id, response);
+        }
       }
 
       const isGenerationRequest =
-        method === 'POST' &&
-        pathname.startsWith('/api/generate/') &&
-        pathname !== '/api/generate/status';
+        method === 'POST'
+        && pathname.startsWith('/api/generate/')
+        && pathname !== '/api/generate/status';
 
       if (isGenerationRequest && typeof init?.body === 'string') {
         try {
@@ -138,20 +233,21 @@ export function SecureProviderFetchBridge() {
                   ? data.jobId
                   : null;
 
-            // Keep provider context only for older routes that still return a
-            // raw provider job id. Stateless local jobs encode this metadata in
-            // their token and need only the locally stored key during polling.
+            // Keep context only for older routes that return a raw provider job
+            // id. Stateless local jobs encode provider metadata in the token.
             if (
-              data.status === 'processing' &&
-              jobId &&
-              data.localJob !== true &&
-              providerId &&
-              typeof payload.apiKey === 'string'
+              data.status === 'processing'
+              && jobId
+              && data.localJob !== true
+              && providerId
+              && typeof payload.apiKey === 'string'
             ) {
               legacyJobs.set(jobId, {
                 provider: providerId,
                 modelId:
-                  typeof payload.modelId === 'string' ? payload.modelId : undefined,
+                  typeof payload.modelId === 'string'
+                    ? payload.modelId
+                    : undefined,
                 apiKey: payload.apiKey,
               });
             }
@@ -177,6 +273,8 @@ export function SecureProviderFetchBridge() {
     window.fetch = secureFetch;
 
     return () => {
+      statusCoordinator.clearAll();
+      legacyJobs.clear();
       if (window.fetch === secureFetch) {
         window.fetch = originalFetch;
       }
