@@ -1,7 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { PROVIDERS } from '@/lib/providers-data';
 
-async function getProviderById(id: string) {
+import { PROVIDERS } from '@/lib/providers-data';
+import {
+  GenerationRegistryError,
+  requireModelOperation,
+} from '@/lib/generation-registry';
+
+function getProviderById(id: string) {
   return PROVIDERS.find((provider) => provider.id === id);
 }
 
@@ -143,13 +148,20 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    let provider = providerId ? await getProviderById(providerId) : null;
+    let provider = providerId ? getProviderById(providerId) : null;
     if (!provider && providerName) {
       provider = PROVIDERS.find((candidate) => candidate.name === providerName) || null;
     }
     if (!provider) {
       return NextResponse.json({ error: 'Provider not found' }, { status: 404 });
     }
+
+    requireModelOperation(
+      provider.name,
+      modelId,
+      mask ? 'inpaint' : 'edit',
+      'edit',
+    );
 
     let images: string[];
     switch (provider.name) {
@@ -179,6 +191,13 @@ export async function POST(req: NextRequest) {
       { headers: { 'Cache-Control': 'no-store' } },
     );
   } catch (error) {
+    if (error instanceof GenerationRegistryError) {
+      return NextResponse.json(
+        { error: error.message, code: error.code },
+        { status: error.status },
+      );
+    }
+
     console.error('Edit image error:', error);
     return NextResponse.json(
       { error: error instanceof Error ? error.message : 'Failed to edit image' },
