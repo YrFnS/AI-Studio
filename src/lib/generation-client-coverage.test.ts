@@ -12,6 +12,9 @@ const skippedFiles = new Set([
   path.normalize('src/lib/generation-client.ts'),
   path.normalize('src/lib/generation-client.test.ts'),
   path.normalize('src/lib/generation-client-coverage.test.ts'),
+  // Pure planning module: it returns endpoint strings but performs no fetch.
+  path.normalize('src/lib/generation-operation.ts'),
+  path.normalize('src/lib/generation-operation.test.ts'),
   path.normalize('src/lib/generation-poller.ts'),
   path.normalize('src/lib/generation-poller.test.ts'),
   path.normalize('src/components/secure-provider-fetch-bridge.tsx'),
