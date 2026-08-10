@@ -53,7 +53,9 @@ describe('explicit generation client coverage', () => {
       const isClientModule =
         content.startsWith("'use client';")
         || content.startsWith('"use client";');
-      if (!isClientModule || !content.includes(explicitImport)) {
+      if (!isClientModule) continue;
+
+      if (!content.includes(explicitImport)) {
         missing.push(relativePath);
       }
     }
