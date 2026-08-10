@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 
 import { GenerationRegistryError } from '@/lib/generation-registry';
 import { GenerationRequestError } from '@/lib/server/generation-request';
+import { ImageInputError } from '@/lib/server/image-input';
 import { ProviderRequestError } from '@/lib/server/provider-request';
 
 export function noStoreJson(
@@ -30,6 +31,13 @@ export function generationErrorResponse(
   }
 
   if (error instanceof GenerationRegistryError) {
+    return noStoreJson({
+      error: error.message,
+      code: error.code,
+    }, error.status);
+  }
+
+  if (error instanceof ImageInputError) {
     return noStoreJson({
       error: error.message,
       code: error.code,
