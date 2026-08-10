@@ -13,8 +13,27 @@ Make generation submission, polling, and browser persistence deterministic befor
 ### Single persistence owner
 
 - Removed `GenerationRuntimeBridge`, which globally intercepted generation requests and wrote a second set of generation records.
-- Kept the explicit persistence lifecycle already used by Image, Video, and Cinema Studio: `beginGeneration`, `markGenerationProcessing`, `completeGeneration`, and `failGeneration`.
-- Retained `SecureProviderFetchBridge` only as a temporary compatibility layer while the remaining studio callers are migrated to the explicit generation client.
+- Kept the explicit persistence lifecycle used by Image, Video, and Cinema Studio: `beginGeneration`, `markGenerationProcessing`, `completeGeneration`, and `failGeneration`.
+- Removed `SecureProviderFetchBridge`; AI Studio no longer replaces `window.fetch` globally.
+
+### Explicit generation client
+
+- Added `src/lib/generation-client.ts` as the explicit browser transport for generation submission and status checks.
+- Browser generation callers import `generationFetch` directly as their local `fetch` binding, while unrelated requests continue through the native fetch implementation.
+- The client reads a missing provider key from IndexedDB, injects it only into generation requests, and never persists it in server state.
+- GET-style legacy status callers are converted into credential-safe POST requests inside the explicit client rather than through a global monkey patch.
+- The shared status coordinator applies one retry, backoff, deadline, and terminal-error policy to current fixed-interval callers.
+- Migrated the verified browser caller set:
+  - `cinema-studio.tsx`
+  - `image-editor-panel.tsx`
+  - `image-editor.tsx`
+  - `image-studio.tsx`
+  - `model-compare.tsx`
+  - `use-image-generate.ts`
+  - `use-model-compare.ts`
+  - `use-post-gen-actions.ts`
+  - `video-studio.tsx`
+- Added a repository coverage test that fails whenever a browser module calls `/api/generate/*` without importing the explicit client.
 
 ### Stateless async jobs
 
@@ -29,8 +48,7 @@ Make generation submission, polling, and browser persistence deterministic befor
 - Added `src/lib/generation-poller.ts` as the common status-request and polling engine.
 - Status checks use POST and mark direct resilient callers with `x-ai-studio-poll-client: resilient`.
 - Added exponential backoff, bounded jitter, an overall deadline, a consecutive transport-error limit, cancellation support, and normalized terminal errors.
-- The compatibility bridge now routes Image Studio, Video Studio, Cinema Studio, Model Compare, and post-generation polling through the same coordinator without stacking multiple polling loops.
-- Fixed-interval legacy callers may continue ticking locally, but the coordinator throttles actual status traffic according to the shared backoff policy.
+- Fixed-interval callers may continue ticking locally, but the explicit client coordinator throttles actual status traffic according to the shared backoff policy.
 - Non-2xx terminal payloads and exhausted retries are returned as normal `{ status: 'failed' }` results so existing studio loops stop instead of logging forever.
 
 ### Interrupted-job recovery
@@ -62,13 +80,15 @@ Make generation submission, polling, and browser persistence deterministic befor
 - Tests verify extra credential fields are not serialized.
 - Malformed, legacy, and oversized token inputs are rejected.
 - Polling tests cover POST credential handling, transient recovery, retry exhaustion, cancellation, original-job deadlines, coordinator backoff, and terminal non-2xx normalization.
+- Explicit-client tests cover native pass-through, key injection, explicit-key preservation, GET-to-POST conversion, IndexedDB key recovery, and terminal invalid requests.
+- The coverage test prevents a new browser generation caller from bypassing the explicit client.
 
 ## Remaining P0 work
 
-### Explicit generation-client migration
+### Generation lifecycle consolidation
 
-- Replace the remaining duplicated submission and UI lifecycle code in Image, Video, Cinema, Compare, and post-generation actions with one explicit generation client.
-- Remove `SecureProviderFetchBridge` after the final caller is migrated.
+- Replace duplicated studio submission, queue, completion, and fixed-interval timer code with higher-level generation-client job handles.
+- Move Image, Video, Cinema, Compare, and post-generation actions onto the same typed submit/poll/persist lifecycle.
 - Add user-facing cancellation controls and provider cancellation adapters where supported.
 - Add a visible recovery state for jobs waiting on a missing provider key.
 
