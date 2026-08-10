@@ -63,7 +63,13 @@ async function runWithConcurrency<T>(
       while (nextIndex < items.length) {
         const index = nextIndex;
         nextIndex += 1;
-        await worker(items[index]);
+        try {
+          await worker(items[index]);
+        } catch (error) {
+          // One corrupt record or IndexedDB failure must not prevent the other
+          // interrupted jobs from receiving a recovery attempt.
+          console.error('Generation recovery worker failed', error);
+        }
       }
     },
   );
