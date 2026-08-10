@@ -10,8 +10,10 @@ AI Studio is a local-first, multi-provider workspace for AI image and video gene
 - **Explicit generation client** — every browser module that submits or polls generation work imports the shared client directly; AI Studio does not replace `window.fetch` globally.
 - **Typed generation lifecycle** — primary studios, model comparison, editing, and derived actions share one submit, poll, persist, queue, cancellation, and recovery contract.
 - **Authoritative operation registry** — every executable provider/model/operation combination declares its owning route, adapter, and verification level. Raw catalog capability labels cannot make a model executable.
-- **Operation-aware selectors** — text-to-image, image-to-image, edit, inpaint, variation, upscale, text-to-video, and image-to-video each expose only models registered for that exact operation.
-- **Local provider proxy** — Next.js routes running on the same machine translate requests to each provider's API format.
+- **Strict route schemas** — generation routes reject malformed, oversized, unknown, or out-of-range input before provider contact.
+- **Bounded provider transport** — provider submissions and status checks have deadlines, bounded error reads, and normalized public errors.
+- **Safe image ingestion** — reference images have one 10 MB binary limit, strict image types, HTTPS-only remote fetching, redirect limits, and private-network blocking.
+- **Production browser hardening** — a Content Security Policy and security headers are applied through the Next.js configuration.
 - **No persistent server-side credentials** — provider keys are not written to a server database or configuration file.
 - **Stateless async polling** — long-running jobs return credential-free tokens containing only provider job metadata; polling sends the locally stored key in a POST body.
 
@@ -34,6 +36,7 @@ AI Studio is a local-first, multi-provider workspace for AI image and video gene
 - Tailwind CSS 4 and shadcn/ui with Radix primitives
 - Zustand for application state
 - IndexedDB for local persistence
+- Zod for route contracts and parameter bounds
 - Framer Motion for interface animation
 - Bun for dependency management and scripts
 
@@ -86,7 +89,7 @@ Clearing this site's browser storage removes this locally persisted data.
 
 Every browser generation caller imports `generationFetch` from `src/lib/generation-client.ts`. The client reads the selected provider key from IndexedDB when the caller did not already supply it, sends the request to the local Next.js route, and leaves unrelated network requests untouched. No global fetch monkey patch is installed.
 
-`src/lib/generation-lifecycle.ts` owns the durable lifecycle for new work and interrupted work: creation, submission, asynchronous polling, queue updates, completion or failure persistence, local cancellation, page detachment, and recovery. Immediate provider results and asynchronous jobs therefore use the same terminal path.
+`src/lib/generation-lifecycle.ts` owns the durable lifecycle for new and interrupted work: creation, submission, asynchronous polling, queue updates, completion or failure persistence, local cancellation, page detachment, and recovery. Immediate provider results and asynchronous jobs use the same terminal path.
 
 `src/lib/generation-registry.ts` is the executable source of truth. A model must have a contract for the exact operation and route before it can appear in generation selectors or reach a provider. Each contract records an adapter ID and one of three verification levels:
 
@@ -96,15 +99,52 @@ Every browser generation caller imports `generationFetch` from `src/lib/generati
 
 No contract is promoted to `live-verified` without manual evidence.
 
-For editing and derived actions, `src/lib/generation-operation.ts` consumes these registry contracts and builds the dedicated edit, upscale, variation, or image-to-video request. The request body remains credential-free until the explicit client injects the matching locally stored provider key. Image-to-video selects a connected video model registered for that operation rather than sending an image model identifier to a video endpoint.
+For editing and derived actions, `src/lib/generation-operation.ts` consumes these registry contracts and builds the dedicated edit, upscale, variation, or image-to-video request. The request body remains credential-free until the explicit client injects the matching locally stored provider key.
 
-When a user starts a generation, the local Next.js route calls `requireModelOperation` before contacting the selected provider. Unsupported models, operations, or route combinations fail locally with a clear error.
+When a user starts a generation, the local route first parses the body through the operation-specific Zod schema in `src/lib/server/generation-request.ts`. The parser enforces content type, total body size, required fields, strict unknown-field rejection, and parameter bounds. The route then calls `requireModelOperation` before contacting the selected provider.
+
+Provider calls use `src/lib/server/provider-request.ts`. Generation submissions have a 120-second deadline, status checks have a 20-second deadline, and provider error bodies are read only up to 8 KB. Authentication, quota, rejected-request, timeout, network, unavailable, and invalid-response failures are normalized. Raw provider response text is not returned to the browser.
 
 For asynchronous providers, the submission route returns a stateless token containing the provider name, model ID, provider job ID, and media kind. The token never includes the provider API key. Each status request is a POST that supplies the token and reads the provider key again from IndexedDB. This allows polling to continue after the local Next.js process restarts without storing provider credentials in process memory.
 
 The shared polling coordinator applies bounded retry, backoff, deadline, cancellation, and terminal-error behavior. `PendingGenerationRecovery` scans IndexedDB after a new page session and resumes older processing jobs through the same polling and persistence path.
 
 Some authenticated provider outputs still use short-lived protected-media tokens so the browser can stream the result without exposing the provider key. Restarting the local process invalidates those temporary protected-media links; eliminating that remaining process-memory dependency is tracked in `docs/P0-RUNTIME-INTEGRITY.md`.
+
+## Reference image handling
+
+Reference images are limited to 10 MB of decoded binary data and must be PNG, JPEG, WebP, or GIF.
+
+Browser upload flows validate type and size before `FileReader` or base64 conversion. The local upload route repeats those checks before returning a data URL.
+
+Remote image inputs must:
+
+- use HTTPS,
+- contain no URL credentials,
+- resolve only to public addresses,
+- remain below the redirect and timeout limits,
+- return image content,
+- and stream no more than 10 MB.
+
+This prevents provider adapters from becoming an unrestricted server-side URL fetcher.
+
+## Security headers
+
+`src/lib/security-headers.ts` is applied to every route through `next.config.ts`.
+
+Production includes:
+
+- Content Security Policy
+- HTTP Strict Transport Security
+- `X-Content-Type-Options: nosniff`
+- `X-Frame-Options: DENY`
+- strict referrer policy
+- restrictive permissions policy
+- Cross-Origin Opener Policy
+- disabled DNS prefetching
+- disabled `X-Powered-By`
+
+The production CSP blocks object embedding and framing, restricts base URIs and form actions, and does not permit `unsafe-eval`. Development permits the evaluator required by the Next.js development runtime.
 
 ## Provider support
 
@@ -128,7 +168,7 @@ Custom or dynamically discovered models are never merged directly into Image, Vi
 src/
 ├── app/
 │   ├── api/
-│   │   ├── generate/             # Registry-validated submission, polling, editing, and media routes
+│   │   ├── generate/             # Validated submission, polling, editing, and media routes
 │   │   ├── keys/                 # Provider-key connection tests
 │   │   ├── models/               # Model catalog and discovery endpoints
 │   │   ├── prompt-suggestions/   # Prompt assistance
@@ -149,10 +189,16 @@ src/
     ├── generation-operation.ts   # Derived-action planning from registry contracts
     ├── generation-poller.ts      # Shared resilient polling policy
     ├── generation-registry.ts    # Provider/model/operation/route/adapter source of truth
+    ├── reference-image-limits.ts # Shared browser and server image limits
+    ├── security-headers.ts       # CSP and production browser hardening
+    ├── server/
+    │   ├── generation-request.ts # Zod schemas and bounded request parsing
+    │   ├── generation-response.ts # Normalized public route errors
+    │   ├── image-input.ts        # SSRF-safe, size-bounded image loading
+    │   ├── provider-request.ts   # Provider deadlines and error normalization
+    │   └── replicate.ts          # Official-model and version routing
     ├── idb.ts                    # Browser persistence
-    ├── provider-capabilities.ts  # Provider media-kind summary derived from the registry
     ├── providers-data.ts         # Static provider and model definitions
-    ├── server/replicate.ts       # Official-model and immutable-version Replicate routing
     ├── server-generation-store.ts # Temporary compatibility for legacy jobs
     └── server-media-store.ts     # Temporary authenticated-media proxy context
 ```
