@@ -9,7 +9,7 @@ AI Studio is a local-first, multi-provider workspace for AI image and video gene
 - **Browser persistence** — keys, generations, prompts, collections, reference images, and custom models are stored in IndexedDB.
 - **Local provider proxy** — Next.js routes running on the same machine translate requests to each provider's API format.
 - **No persistent server-side credentials** — provider keys are not written to a server database or configuration file.
-- **Secure async polling** — long-running jobs use opaque local tokens instead of placing provider keys in status URLs.
+- **Stateless async polling** — long-running jobs return credential-free tokens containing only provider job metadata; polling sends the locally stored key in a POST body.
 
 ## Features
 
@@ -78,11 +78,13 @@ bun run check
 
 Clearing this site's browser storage removes this locally persisted data.
 
-### Sent during generation
+### Sent during generation and polling
 
 When a user starts a generation, the browser reads the selected provider key from IndexedDB and sends it to the local Next.js route. That local route calls the chosen provider. The key is used for that request but is not persisted in a server-side database.
 
-For asynchronous providers, AI Studio temporarily retains the provider job context in local process memory and returns an opaque local job token to the browser. Status polling uses that token, so credentials are not placed in query strings, browser history, or proxy access logs. Restarting the local process clears temporary job and protected-media tokens.
+For asynchronous providers, the submission route returns a stateless token containing the provider name, model ID, provider job ID, and media kind. The token never includes the provider API key. Each status request is a POST that supplies the token and reads the provider key again from IndexedDB. This allows polling to continue after the local Next.js process restarts without storing provider credentials in process memory.
+
+Some authenticated provider outputs still use short-lived protected-media tokens so the browser can stream the result without exposing the provider key. Restarting the local process invalidates those temporary protected-media links; eliminating that remaining process-memory dependency is tracked in `docs/P0-RUNTIME-INTEGRITY.md`.
 
 ## Provider support
 
@@ -119,11 +121,12 @@ src/
 │   └── secure-provider-fetch-bridge.tsx
 ├── hooks/
 └── lib/
+    ├── generation-job.ts         # Credential-free stateless async job tokens
     ├── idb.ts                    # Browser persistence
     ├── provider-capabilities.ts  # Executable adapter matrix
     ├── providers-data.ts         # Static provider and model definitions
-    ├── server-generation-store.ts
-    └── server-media-store.ts
+    ├── server-generation-store.ts # Temporary compatibility for legacy jobs
+    └── server-media-store.ts     # Temporary authenticated-media proxy context
 ```
 
 ## Reference sources and notices
