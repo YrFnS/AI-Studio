@@ -1,5 +1,7 @@
 'use client';
 
+import { generationFetch as fetch } from '@/lib/generation-client';
+
 import { useEffect, useState, useCallback, useRef } from 'react';
 import * as idb from '@/lib/data';
 import { beginGeneration, completeGeneration, failGeneration, markGenerationProcessing, type GenerationDescriptor } from '@/lib/generation-persistence';

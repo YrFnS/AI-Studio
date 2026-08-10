@@ -1,5 +1,7 @@
 'use client';
 
+import { generationFetch as fetch } from '@/lib/generation-client';
+
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { toast } from 'sonner';
 

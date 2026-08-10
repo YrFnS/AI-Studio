@@ -1,5 +1,7 @@
 'use client';
 
+import { generationFetch as fetch } from '@/lib/generation-client';
+
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { getAllCustomModels } from '@/lib/idb';
 import { motion, AnimatePresence } from 'framer-motion';
