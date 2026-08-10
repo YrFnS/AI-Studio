@@ -1,3 +1,5 @@
+import { providerFetch as fetch } from '@/lib/server/provider-request';
+
 export interface ReplicatePredictionRequest {
   url: string;
   body: {
@@ -64,7 +66,7 @@ export async function submitReplicatePrediction(
     modelId,
     input,
   );
-  const response = await fetch(request.url, {
+  const response = await fetch('Replicate', request.url, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -72,11 +74,6 @@ export async function submitReplicatePrediction(
     },
     body: JSON.stringify(request.body),
   });
-
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Replicate API error: ${response.status} - ${error}`);
-  }
 
   return response.json() as Promise<Record<string, unknown>>;
 }
