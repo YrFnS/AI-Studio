@@ -8,6 +8,14 @@ import {
   getApiKeyForProvider,
   StoredApiKey,
 } from '@/lib/idb';
+import { useAppStore } from '@/lib/store';
+
+function notifyProviderKeyChange(): void {
+  useAppStore.getState().refreshProviders();
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('ai-studio:api-keys-changed'));
+  }
+}
 
 export function useApiKeys() {
   const [keys, setKeys] = useState<StoredApiKey[]>([]);
@@ -32,6 +40,7 @@ export function useApiKeys() {
     async (providerId: string, key: string, label: string) => {
       await idbSaveKey(providerId, key, label);
       await refresh();
+      notifyProviderKeyChange();
     },
     [refresh]
   );
@@ -40,6 +49,7 @@ export function useApiKeys() {
     async (providerId: string) => {
       await idbDeleteKey(providerId);
       await refresh();
+      notifyProviderKeyChange();
     },
     [refresh]
   );
