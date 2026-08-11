@@ -72,6 +72,8 @@ The automatic checks require:
 - a durable result is present,
 - and no second record references the same provider job ID.
 
+Immediate providers do not always return a provider job ID. In that case, the verifier correlates records by provider, model, media type, prompt, parent generation, and a five-second creation window so duplicate or unintended batch persistence still fails this gate.
+
 ## Gate 2 — Asynchronous image restart recovery
 
 Goal: prove one asynchronous image job survives a local-server restart.
