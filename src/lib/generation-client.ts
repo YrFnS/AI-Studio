@@ -252,6 +252,10 @@ export function createGenerationClient(
           body: JSON.stringify(payload),
         });
 
+        // Protected media is a potentially large binary stream. It must pass
+        // through without cloning or attempting JSON inspection.
+        if (pathname === '/api/generate/media') return response;
+
         try {
           const data = await response.clone().json() as Record<string, unknown>;
           const jobId = asString(data.id) || asString(data.jobId);
