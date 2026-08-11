@@ -31,13 +31,16 @@ jobs:
           bun-version: 1.3.4
 
       - name: Apply reviewed model registration integration
-        run: node scripts/apply-model-registration-review.mjs
+        run: |
+          node scripts/apply-model-registration-review.mjs
+          node scripts/fix-model-registration-review-integration.mjs
 
       - name: Remove one-time migration tooling
         run: |
           git rm -f \
             .github/workflows/apply-model-registration-review.yml \
-            scripts/apply-model-registration-review.mjs
+            scripts/apply-model-registration-review.mjs \
+            scripts/fix-model-registration-review-integration.mjs
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
