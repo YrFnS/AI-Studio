@@ -1,6 +1,6 @@
 'use client';
 
-import { generationFetch } from '@/lib/generation-client';
+import { generationFetch as fetch } from '@/lib/generation-client';
 import {
   MAX_PROTECTED_MEDIA_BYTES,
   type ProtectedMediaDescriptor,
@@ -41,7 +41,7 @@ export async function downloadProtectedMedia(
     signal?: AbortSignal;
   } = {},
 ): Promise<Blob> {
-  const fetchImpl = options.fetchImpl ?? generationFetch;
+  const fetchImpl = options.fetchImpl ?? fetch;
   const response = await fetchImpl('/api/generate/media', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
