@@ -6,7 +6,7 @@ import {
   getGenerationJob,
   type GenerationJobContext,
 } from '@/lib/server-generation-store';
-import { registerProtectedMedia } from '@/lib/server-media-store';
+import { PROTECTED_MEDIA_DESCRIPTOR_VERSION } from '@/lib/protected-media';
 import {
   MAX_STATUS_REQUEST_BYTES,
   parseGenerationRequest,
@@ -227,12 +227,15 @@ async function pollProvider(job: GenerationJobContext) {
           return { status: 'failed', error: 'Google Veo completed without a media URL' };
         }
 
-        const mediaToken = registerProtectedMedia({
-          url: providerMediaUrl,
-          headers: { 'x-goog-api-key': apiKey },
-        });
-        const resultUrl = `/api/generate/media/${mediaToken}`;
-        return { status: 'completed', resultUrl, urls: [resultUrl] };
+        return {
+          status: 'completed',
+          protectedMedia: {
+            version: PROTECTED_MEDIA_DESCRIPTOR_VERSION,
+            providerId: provider,
+            providerJobId,
+            kind: 'video',
+          },
+        };
       }
       return { status: 'processing' };
     }

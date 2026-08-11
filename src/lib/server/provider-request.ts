@@ -237,9 +237,46 @@ function wrapResponse(
     provider: string;
   },
 ): Response {
+  let wrappedBody: ReadableStream<Uint8Array> | null | undefined;
+
   return new Proxy(response, {
     get(target, property) {
       const value = Reflect.get(target, property, target);
+
+      if (property === 'body') {
+        if (value === null) {
+          options.finish();
+          return null;
+        }
+        if (wrappedBody !== undefined) return wrappedBody;
+
+        const reader = (value as ReadableStream<Uint8Array>).getReader();
+        wrappedBody = new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            try {
+              const chunk = await reader.read();
+              if (chunk.done) {
+                options.finish();
+                controller.close();
+                return;
+              }
+              if (chunk.value) controller.enqueue(chunk.value);
+            } catch {
+              options.finish();
+              controller.error(
+                options.didTimeout()
+                  ? timeoutError(options.provider)
+                  : invalidResponseError(options.provider),
+              );
+            }
+          },
+          async cancel(reason) {
+            options.finish();
+            await reader.cancel(reason);
+          },
+        });
+        return wrappedBody;
+      }
 
       if (BODY_METHODS.has(property) && typeof value === 'function') {
         return async (...args: unknown[]) => {

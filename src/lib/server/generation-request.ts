@@ -4,18 +4,21 @@ import {
   MAX_REFERENCE_IMAGE_BYTES,
   REFERENCE_IMAGE_MIME_TYPES,
 } from '@/lib/reference-image-limits';
+import { PROTECTED_MEDIA_DESCRIPTOR_VERSION } from '@/lib/protected-media';
 
 export const MAX_IMAGE_GENERATION_REQUEST_BYTES = 30 * 1024 * 1024;
 export const MAX_VIDEO_GENERATION_REQUEST_BYTES = 45 * 1024 * 1024;
 export const MAX_EDIT_REQUEST_BYTES = 30 * 1024 * 1024;
 export const MAX_SINGLE_IMAGE_REQUEST_BYTES = 15 * 1024 * 1024;
 export const MAX_STATUS_REQUEST_BYTES = 128 * 1024;
+export const MAX_PROTECTED_MEDIA_REQUEST_BYTES = 128 * 1024;
 
 const MAX_PROMPT_CHARS = 12_000;
 const MAX_NEGATIVE_PROMPT_CHARS = 6_000;
 const MAX_API_KEY_CHARS = 65_536;
 const MAX_MODEL_ID_CHARS = 512;
 const MAX_PROVIDER_ID_CHARS = 128;
+const MAX_PROVIDER_JOB_ID_CHARS = 8_192;
 const MAX_REMOTE_IMAGE_URL_CHARS = 4_096;
 const MAX_DATA_URL_CHARS = Math.ceil((MAX_REFERENCE_IMAGE_BYTES * 4) / 3) + 512;
 
@@ -75,6 +78,17 @@ const negativePromptSchema = safeTrimmedString(MAX_NEGATIVE_PROMPT_CHARS)
 const apiKeySchema = z.string()
   .max(MAX_API_KEY_CHARS)
   .refine((value) => value.trim().length > 0, 'API key is required');
+const providerJobIdSchema = safeTrimmedString(MAX_PROVIDER_JOB_ID_CHARS)
+  .pipe(z.string().min(1, 'Provider job id is required'))
+  .refine(
+    (value) =>
+      !value.includes('://')
+      && !value.includes('?')
+      && !value.includes('#')
+      && !value.startsWith('/')
+      && !value.split('/').includes('..'),
+    'Provider job id contains unsupported URL syntax',
+  );
 
 function estimateBase64Bytes(value: string): number {
   const normalized = value.replace(/\s/g, '');
@@ -288,6 +302,14 @@ export const statusGenerationRequestSchema = z.object({
   provider: providerNameSchema.optional(),
   modelId: modelIdSchema.optional(),
   apiKey: apiKeySchema.optional(),
+}).strict();
+
+export const protectedMediaRequestSchema = z.object({
+  version: z.literal(PROTECTED_MEDIA_DESCRIPTOR_VERSION),
+  providerId: z.enum(['google', 'google-aistudio']),
+  providerJobId: providerJobIdSchema,
+  kind: z.enum(['video', 'image']),
+  apiKey: apiKeySchema,
 }).strict();
 
 async function readRequestBody(

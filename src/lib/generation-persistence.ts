@@ -3,6 +3,8 @@
 import * as data from '@/lib/data';
 import type { GenerationRecord } from '@/lib/data';
 
+export type GenerationOutput = string | Blob;
+
 export interface GenerationDescriptor {
   id: string;
   providerId: string;
@@ -56,7 +58,6 @@ async function persist(record: GenerationRecord): Promise<void> {
   try {
     await data.saveGeneration(record);
   } catch (error) {
-    // Generation should still complete even if browser storage is unavailable.
     console.error('Failed to persist generation', error);
   }
 }
@@ -79,27 +80,60 @@ export async function markGenerationProcessing(
   await persist(toRecord(descriptor, 'processing', { providerJobId }));
 }
 
+function isValidOutput(value: GenerationOutput | null | undefined): value is GenerationOutput {
+  return typeof value === 'string'
+    ? value.length > 0
+    : value instanceof Blob && value.size > 0;
+}
+
 export async function completeGeneration(
   descriptor: GenerationDescriptor,
-  urls: Array<string | null | undefined>,
+  outputs: Array<GenerationOutput | null | undefined>,
   providerJobId?: string,
 ): Promise<string[]> {
-  const validUrls = urls.filter((url): url is string => Boolean(url));
-  if (validUrls.length === 0) {
+  const validOutputs = outputs.filter(isValidOutput);
+  if (validOutputs.length === 0) {
     await failGeneration(descriptor, 'Provider completed without returning a result', providerJobId);
     return [];
   }
 
   const ids: string[] = [];
-  for (const [index, resultUrl] of validUrls.entries()) {
-    const id = index === 0 ? descriptor.id : createGenerationId(descriptor.type === 'video' ? 'vid' : 'img');
+  for (const [index, output] of validOutputs.entries()) {
+    const id = index === 0
+      ? descriptor.id
+      : createGenerationId(descriptor.type === 'video' ? 'vid' : 'img');
     const itemDescriptor: GenerationDescriptor = {
       ...descriptor,
       id,
       createdAt: descriptor.createdAt + index,
     };
-    await persist(toRecord(itemDescriptor, 'completed', { resultUrl, providerJobId }));
-    ids.push(id);
+
+    if (typeof output === 'string') {
+      await persist(toRecord(itemDescriptor, 'completed', {
+        resultUrl: output,
+        providerJobId,
+      }));
+      ids.push(id);
+      continue;
+    }
+
+    try {
+      const asset = await data.saveGenerationMediaAsset(id, output);
+      await persist(toRecord(itemDescriptor, 'completed', {
+        mediaAssetId: asset.id,
+        resultMimeType: asset.mimeType,
+        resultSize: asset.size,
+        providerJobId,
+      }));
+      ids.push(id);
+    } catch (error) {
+      console.error('Failed to persist protected generation media', error);
+      await failGeneration(
+        itemDescriptor,
+        'Protected media could not be stored locally',
+        providerJobId,
+      );
+    }
   }
   return ids;
 }

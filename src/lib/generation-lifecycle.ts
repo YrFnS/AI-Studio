@@ -1,6 +1,8 @@
 'use client';
 
 import { generationFetch } from '@/lib/generation-client';
+import { downloadProtectedMedia } from '@/lib/protected-media-client';
+import { parseProtectedMediaDescriptor } from '@/lib/protected-media';
 import { getApiKeyForProvider } from '@/lib/idb';
 import {
   beginGeneration,
@@ -8,6 +10,7 @@ import {
   failGeneration,
   markGenerationProcessing,
   type GenerationDescriptor,
+  type GenerationOutput,
 } from '@/lib/generation-persistence';
 import {
   GenerationPollingError,
@@ -141,6 +144,8 @@ export interface GenerationLifecycleDependencies {
   completeImpl: CompleteLike;
   failImpl: FailLike;
   getApiKey: ApiKeyResolver;
+  fetchMediaImpl: typeof downloadProtectedMedia;
+  createObjectUrl: (blob: Blob) => string;
   now: () => number;
 }
 
@@ -151,7 +156,6 @@ export interface GenerationLifecycleClient {
 
 interface SubmissionCompleted {
   kind: 'completed';
-  urls: string[];
   payload: Record<string, unknown>;
 }
 
@@ -218,8 +222,9 @@ async function parseSubmissionResponse(response: Response): Promise<SubmissionRe
   }
 
   const urls = normalizeUrls(payload);
-  if (payload.status === 'completed' && urls.length > 0) {
-    return { kind: 'completed', urls, payload };
+  const protectedMedia = parseProtectedMediaDescriptor(payload.protectedMedia);
+  if (payload.status === 'completed' && (urls.length > 0 || protectedMedia)) {
+    return { kind: 'completed', payload };
   }
 
   const providerJobId = asString(payload.id) || asString(payload.jobId);
@@ -262,6 +267,32 @@ function completedPayload(
   return { ...payload };
 }
 
+async function resolveCompletedOutputs(
+  payload: Record<string, unknown>,
+  apiKey: string | null | undefined,
+  signal: AbortSignal,
+  dependencies: GenerationLifecycleDependencies,
+): Promise<GenerationOutput[]> {
+  const urls = normalizeUrls(payload);
+  if (urls.length > 0) return urls;
+
+  const protectedMedia = parseProtectedMediaDescriptor(payload.protectedMedia);
+  if (!protectedMedia) return [];
+  if (!apiKey) {
+    throw new GenerationLifecycleError(
+      'No API key is available to download protected media',
+      { code: 'missing-api-key' },
+    );
+  }
+
+  const blob = await dependencies.fetchMediaImpl(
+    protectedMedia,
+    apiKey,
+    { fetchImpl: dependencies.fetchImpl, signal },
+  );
+  return [blob];
+}
+
 export function createGenerationLifecycleClient(
   overrides: Partial<GenerationLifecycleDependencies> = {},
 ): GenerationLifecycleClient {
@@ -273,6 +304,8 @@ export function createGenerationLifecycleClient(
     completeImpl: completeGeneration,
     failImpl: failGeneration,
     getApiKey: getApiKeyForProvider,
+    fetchMediaImpl: downloadProtectedMedia,
+    createObjectUrl: (blob) => URL.createObjectURL(blob),
     now: Date.now,
     ...overrides,
   };
@@ -287,7 +320,7 @@ export function createGenerationLifecycleClient(
       signal: AbortSignal;
       setProcessing: (providerJobId: string) => Promise<void>;
       complete: (
-        urls: string[],
+        outputs: GenerationOutput[],
         payload: Record<string, unknown>,
         providerJobId?: string,
       ) => Promise<GenerationLifecycleResult>;
@@ -345,11 +378,11 @@ export function createGenerationLifecycleClient(
     };
 
     const complete = async (
-      urls: string[],
+      outputs: GenerationOutput[],
       payload: Record<string, unknown>,
       jobId?: string,
     ): Promise<GenerationLifecycleResult> => {
-      if (urls.length === 0) {
+      if (outputs.length === 0) {
         throw new GenerationLifecycleError(
           'Provider completed without returning a result',
           { code: 'invalid-response', providerJobId: jobId || providerJobId },
@@ -365,7 +398,7 @@ export function createGenerationLifecycleClient(
       if (jobId) providerJobId = jobId;
       const generationIds = await dependencies.completeImpl(
         descriptor,
-        urls,
+        outputs,
         providerJobId,
       );
       if (generationIds.length === 0) {
@@ -375,6 +408,12 @@ export function createGenerationLifecycleClient(
           { code: 'failed', providerJobId },
         );
       }
+
+      const urls = outputs.map((output) =>
+        typeof output === 'string'
+          ? output
+          : dependencies.createObjectUrl(output),
+      );
       terminal = true;
       finalizing = false;
       updateQueue({ status: 'completed', resultUrl: urls[0] });
@@ -483,13 +522,25 @@ export function createGenerationLifecycleClient(
           signal,
         });
         const submission = await parseSubmissionResponse(response);
+        const explicitKey = asString(options.body.apiKey);
 
         if (submission.kind === 'completed') {
-          return complete(submission.urls, submission.payload);
+          const needsKey = Boolean(
+            parseProtectedMediaDescriptor(submission.payload.protectedMedia),
+          );
+          const apiKey = needsKey
+            ? explicitKey || await dependencies.getApiKey(descriptor.providerId)
+            : explicitKey;
+          const outputs = await resolveCompletedOutputs(
+            submission.payload,
+            apiKey,
+            signal,
+            dependencies,
+          );
+          return complete(outputs, submission.payload);
         }
 
         await setProcessing(submission.providerJobId);
-        const explicitKey = asString(options.body.apiKey);
         const apiKey = explicitKey
           || await dependencies.getApiKey(descriptor.providerId);
         if (!apiKey) {
@@ -517,8 +568,14 @@ export function createGenerationLifecycleClient(
           },
         );
         const normalizedPayload = completedPayload(payload);
+        const outputs = await resolveCompletedOutputs(
+          normalizedPayload,
+          apiKey,
+          signal,
+          dependencies,
+        );
         return complete(
-          normalizeUrls(normalizedPayload),
+          outputs,
           normalizedPayload,
           submission.providerJobId,
         );
@@ -564,8 +621,14 @@ export function createGenerationLifecycleClient(
           },
         );
         const normalizedPayload = completedPayload(payload);
+        const outputs = await resolveCompletedOutputs(
+          normalizedPayload,
+          apiKey,
+          signal,
+          dependencies,
+        );
         return complete(
-          normalizeUrls(normalizedPayload),
+          outputs,
           normalizedPayload,
           providerJobId,
         );

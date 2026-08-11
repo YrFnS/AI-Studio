@@ -121,6 +121,13 @@ export async function saveGeneration(gen: GenerationRecord) {
   return idb.saveGeneration(gen);
 }
 
+export async function saveGenerationMediaAsset(
+  generationId: string,
+  blob: Blob,
+) {
+  return idb.saveGenerationMediaAsset(generationId, blob);
+}
+
 export async function updateGeneration(id: string, updates: Partial<GenerationRecord>) {
   return idb.updateGeneration(id, updates);
 }

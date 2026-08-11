@@ -4,7 +4,7 @@
 // ---------------------------------------------------------------------------
 
 const DB_NAME = 'ai-studio';
-const DB_VERSION = 5;
+const DB_VERSION = 6;
 
 // ---------------------------------------------------------------------------
 // Open / upgrade DB
@@ -66,6 +66,12 @@ function openDB(): Promise<IDBDatabase> {
       if (!db.objectStoreNames.contains('discoveredModels')) {
         const discStore = db.createObjectStore('discoveredModels', { keyPath: 'id' });
         discStore.createIndex('providerName', 'providerName', { unique: false });
+      }
+      // v6: generated protected media blobs
+      if (!db.objectStoreNames.contains('mediaAssets')) {
+        const mediaStore = db.createObjectStore('mediaAssets', { keyPath: 'id' });
+        mediaStore.createIndex('generationId', 'generationId', { unique: true });
+        mediaStore.createIndex('createdAt', 'createdAt', { unique: false });
       }
     };
   });
@@ -231,6 +237,72 @@ export async function clearAllReferenceImages(): Promise<void> {
 // Generations (replaces Prisma Generation model)
 // ===========================================================================
 
+export interface GenerationMediaAsset {
+  id: string;
+  generationId: string;
+  blob: Blob;
+  mimeType: string;
+  size: number;
+  createdAt: number;
+}
+
+const mediaObjectUrls = new Map<string, string>();
+
+function revokeGenerationMediaUrl(assetId: string): void {
+  const url = mediaObjectUrls.get(assetId);
+  if (url && typeof URL !== 'undefined') URL.revokeObjectURL(url);
+  mediaObjectUrls.delete(assetId);
+}
+
+export async function saveGenerationMediaAsset(
+  generationId: string,
+  blob: Blob,
+): Promise<GenerationMediaAsset> {
+  const asset: GenerationMediaAsset = {
+    id: `media:${generationId}`,
+    generationId,
+    blob,
+    mimeType: blob.type || 'application/octet-stream',
+    size: blob.size,
+    createdAt: Date.now(),
+  };
+  revokeGenerationMediaUrl(asset.id);
+  const { transaction, stores } = await tx('mediaAssets', 'readwrite');
+  stores.mediaAssets.put(asset);
+  await txComplete(transaction);
+  return asset;
+}
+
+export async function getGenerationMediaAsset(
+  assetId: string,
+): Promise<GenerationMediaAsset | undefined> {
+  const { stores } = await tx('mediaAssets');
+  return reqToPromise(stores.mediaAssets.get(assetId));
+}
+
+async function materializeGenerationMedia(
+  record: GenerationRecord,
+): Promise<GenerationRecord> {
+  if (!record.mediaAssetId) return record;
+  const cached = mediaObjectUrls.get(record.mediaAssetId);
+  if (cached) return { ...record, resultUrl: cached };
+
+  const asset = await getGenerationMediaAsset(record.mediaAssetId);
+  if (!asset) return record;
+  if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') {
+    return record;
+  }
+
+  const resultUrl = URL.createObjectURL(asset.blob);
+  mediaObjectUrls.set(asset.id, resultUrl);
+  return {
+    ...record,
+    resultUrl,
+    resultMimeType: asset.mimeType,
+    resultSize: asset.size,
+  };
+}
+
 export interface GenerationRecord {
   id: string;
   providerId: string;
@@ -243,6 +315,9 @@ export interface GenerationRecord {
   inputImageUrl?: string;
   resultUrl?: string;
   resultData?: string;
+  mediaAssetId?: string;
+  resultMimeType?: string;
+  resultSize?: number;
   thumbnailUrl?: string;
   status: 'pending' | 'processing' | 'completed' | 'failed';
   error?: string;
@@ -263,7 +338,10 @@ export async function saveGeneration(gen: GenerationRecord): Promise<void> {
 
 export async function getGeneration(id: string): Promise<GenerationRecord | undefined> {
   const { stores } = await tx('generations');
-  return reqToPromise(stores['generations'].get(id));
+  const record = await reqToPromise<GenerationRecord | undefined>(
+    stores.generations.get(id),
+  );
+  return record ? materializeGenerationMedia(record) : undefined;
 }
 
 export async function updateGeneration(id: string, updates: Partial<GenerationRecord>): Promise<void> {
@@ -277,8 +355,14 @@ export async function updateGeneration(id: string, updates: Partial<GenerationRe
 }
 
 export async function deleteGeneration(id: string): Promise<void> {
-  const { transaction, stores } = await tx(['generations', 'collectionItems'], 'readwrite');
-  stores['generations'].delete(id);
+  const assetId = `media:${id}`;
+  revokeGenerationMediaUrl(assetId);
+  const { transaction, stores } = await tx(
+    ['generations', 'collectionItems', 'mediaAssets'],
+    'readwrite',
+  );
+  stores.generations.delete(id);
+  stores.mediaAssets.delete(assetId);
   // Also remove from collections
   const itemIndex = stores['collectionItems'].index('generationId');
   const items = await reqToPromise<{ id: string }[]>(itemIndex.getAll(id));
@@ -289,9 +373,14 @@ export async function deleteGeneration(id: string): Promise<void> {
 }
 
 export async function clearAllGenerations(): Promise<void> {
-  const { transaction, stores } = await tx(['generations', 'collectionItems'], 'readwrite');
-  stores['generations'].clear();
-  stores['collectionItems'].clear();
+  for (const assetId of mediaObjectUrls.keys()) revokeGenerationMediaUrl(assetId);
+  const { transaction, stores } = await tx(
+    ['generations', 'collectionItems', 'mediaAssets'],
+    'readwrite',
+  );
+  stores.generations.clear();
+  stores.collectionItems.clear();
+  stores.mediaAssets.clear();
   await txComplete(transaction);
 }
 
@@ -329,8 +418,11 @@ export async function getGenerations(options?: {
   const offset = options?.offset || 0;
   const limit = options?.limit || filtered.length;
   filtered = filtered.slice(offset, offset + limit);
+  const generations = await Promise.all(
+    filtered.map(materializeGenerationMedia),
+  );
 
-  return { generations: filtered, total };
+  return { generations, total };
 }
 
 export async function getGenerationsForTimeline(options?: {
@@ -361,7 +453,7 @@ export async function getGenerationsForTimeline(options?: {
 
   if (options?.providerFilter) filtered = filtered.filter((g) => g.providerId === options.providerFilter);
 
-  return filtered;
+  return Promise.all(filtered.map(materializeGenerationMedia));
 }
 
 export async function getStats(): Promise<{

@@ -48,6 +48,8 @@ function dependencies(
     completeImpl: async (generation) => [generation.id],
     failImpl: async () => {},
     getApiKey: async () => 'stored-key',
+    fetchMediaImpl: async () => new Blob(['media'], { type: 'video/mp4' }),
+    createObjectUrl: () => 'blob:test-media',
     now: () => 2_000,
     ...overrides,
   };
