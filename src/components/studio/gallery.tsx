@@ -222,11 +222,19 @@ export function Gallery() {
   const [stats, setStats] = useState<GalleryStats | null>(null);
   const [showStats, setShowStats] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
   const searchInputRef = useCallback((node: HTMLInputElement | null) => {
     if (node) {
       (window as unknown as Record<string, HTMLInputElement>).__gallerySearchInput = node;
     }
   }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedSearchQuery(searchQuery.trim());
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [searchQuery]);
 
   const [favRippleId, setFavRippleId] = useState<string | null>(null);
   const [favBounceId, setFavBounceId] = useState<string | null>(null);
@@ -243,6 +251,7 @@ export function Gallery() {
 
   // Intersection observer ref for infinite scroll
   const loadMoreRef = useRef<HTMLDivElement>(null);
+  const generationRequestRef = useRef(0);
 
   // Shimmer effect for newly loaded items
   useEffect(() => {
@@ -293,6 +302,7 @@ export function Gallery() {
 
   // Fetch generations ------------------------------------------------------
   const fetchGenerations = useCallback(async (pageNum: number, append = false) => {
+    const requestId = ++generationRequestRef.current;
     try {
       if (append) {
         setLoadingMore(true);
@@ -303,9 +313,12 @@ export function Gallery() {
       const result = await idb.fetchGenerations({
         filter: (galleryFilter === 'collection' ? 'all' : galleryFilter) as 'all' | 'image' | 'video' | 'favorite',
         collectionId: galleryFilter === 'collection' ? selectedCollectionId || undefined : undefined,
+        search: debouncedSearchQuery || undefined,
         page: pageNum,
         limit: PAGE_SIZE,
       });
+
+      if (requestId !== generationRequestRef.current) return;
 
       const mapped = result.generations.map((g) => ({
         id: g.id,
@@ -334,10 +347,12 @@ export function Gallery() {
     } catch {
       toast.error('Failed to load gallery');
     } finally {
-      setLoading(false);
-      setLoadingMore(false);
+      if (requestId === generationRequestRef.current) {
+        setLoading(false);
+        setLoadingMore(false);
+      }
     }
-  }, [galleryFilter, selectedCollectionId]);
+  }, [galleryFilter, selectedCollectionId, debouncedSearchQuery]);
 
   // Initial fetch + refetch on filter change
   useEffect(() => {
@@ -482,10 +497,8 @@ export function Gallery() {
     [handleFavoriteToggle, gallerySelectMode]
   );
 
-  // Filtered generations by search query (must be defined before callbacks that use it)
-  const filteredGenerations = searchQuery
-    ? generations.filter((g) => g.prompt.toLowerCase().includes(searchQuery.toLowerCase()))
-    : generations;
+  // Search is executed against the full IndexedDB result set before pagination.
+  const filteredGenerations = generations;
 
   // Multi-select handlers --------------------------------------------------
   const toggleSelectItem = useCallback((id: string) => {

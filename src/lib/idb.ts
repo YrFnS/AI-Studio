@@ -3,6 +3,8 @@
 // Uses Dexie-like raw IndexedDB API — no external dependencies
 // ---------------------------------------------------------------------------
 
+import { matchesGenerationSearch } from '@/lib/gallery-search';
+
 const DB_NAME = 'ai-studio';
 const DB_VERSION = 6;
 
@@ -10,7 +12,7 @@ const DB_VERSION = 6;
 // Open / upgrade DB
 // ---------------------------------------------------------------------------
 
-function openDB(): Promise<IDBDatabase> {
+export function openAIStudioDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     if (typeof window === 'undefined') {
       reject(new Error('IndexedDB not available in SSR'));
@@ -78,7 +80,7 @@ function openDB(): Promise<IDBDatabase> {
 }
 
 function tx(storeNames: string | string[], mode: IDBTransactionMode = 'readonly'): Promise<{ transaction: IDBTransaction; stores: Record<string, IDBObjectStore> }> {
-  return openDB().then((db) => {
+  return openAIStudioDatabase().then((db) => {
     const names = Array.isArray(storeNames) ? storeNames : [storeNames];
     const transaction = db.transaction(names, mode);
     const stores: Record<string, IDBObjectStore> = {};
@@ -387,6 +389,7 @@ export async function clearAllGenerations(): Promise<void> {
 export async function getGenerations(options?: {
   filter?: 'all' | 'image' | 'video' | 'favorite';
   collectionId?: string;
+  search?: string;
   limit?: number;
   offset?: number;
   orderBy?: 'asc' | 'desc';
@@ -406,6 +409,12 @@ export async function getGenerations(options?: {
     );
     const genIds = new Set(items.map((i) => i.generationId));
     filtered = filtered.filter((g) => genIds.has(g.id));
+  }
+
+  if (options?.search?.trim()) {
+    filtered = filtered.filter((generation) =>
+      matchesGenerationSearch(generation, options.search || ''),
+    );
   }
 
   const total = filtered.length;

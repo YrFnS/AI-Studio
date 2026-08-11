@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { AppTab, SavedPrompt, GenerationStatus, GalleryFilterType, GalleryViewMode, TimelineDateFilter } from '@/lib/types';
+import { keepActiveGenerationQueueItems } from '@/lib/generation-queue-state';
 import type { GenerationCancellationOutcome } from '@/lib/generation-cancellation';
 
 export type { AppTab };
@@ -498,7 +499,7 @@ export const useAppStore = create<AppState>()(
     generationQueue: state.generationQueue.filter((item) => item.id !== id),
   })),
   clearCompleted: () => set((state) => ({
-    generationQueue: state.generationQueue.filter((item) => item.status === 'processing'),
+    generationQueue: keepActiveGenerationQueueItems(state.generationQueue),
   })),
 
   // Model Compare

@@ -122,6 +122,17 @@ P0 is complete only when each request has one durable lifecycle, every exposed p
 - Reconnecting a key triggers a new recovery scan through the store provider version.
 - Missing-key jobs remain `processing` until resumed or explicitly stopped.
 
+### Product correctness
+
+- Replaced the placeholder Settings transfer APIs with a browser-native, versioned local backup format.
+- Backups include generations, prompts, collections, collection membership, reference images, custom/discovered model definitions, and downloaded IndexedDB media assets.
+- API keys are explicitly excluded from local data backups and remain in the separate plain-text key transfer flow.
+- Restore supports replace and merge modes; both preserve stored API keys.
+- Corrected Settings privacy copy to explain that keys are stored in IndexedDB, sent in same-origin POST bodies to this AI Studio instance when required, and not persisted in a server-side database or configuration file.
+- Queue cleanup now preserves both pending and processing work while removing terminal completed and failed entries.
+- Gallery search now runs across the complete filtered IndexedDB result set before pagination and matches prompt, negative prompt, provider, model, type, and status metadata.
+- Added stale-search response protection so an older IndexedDB request cannot overwrite a newer query.
+
 ### Regression coverage
 
 Automated coverage includes:
@@ -153,13 +164,6 @@ Automated coverage includes:
 - Hide or repair contracts that fail live verification.
 - Define the reviewed workflow by which custom and discovered models can become executable without bypassing the registry.
 - Run real provider-side cancellation checks for Replicate, fal, Runway, and Luma; automated tests currently verify the documented HTTP contracts without spending provider credits.
-
-### Product correctness
-
-- Repair Settings export/import so it serializes and restores IndexedDB metadata and generated media assets.
-- Correct the API-key privacy copy in Settings.
-- Fix queue `clearCompleted` so pending work is preserved.
-- Make Gallery search cover all IndexedDB records rather than only the loaded page.
 
 ### Required live evidence
 

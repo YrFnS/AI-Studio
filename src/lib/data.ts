@@ -89,6 +89,7 @@ async function ensureDemoGallery() {
 export async function fetchGenerations(options?: {
   filter?: 'all' | 'image' | 'video' | 'favorite';
   collectionId?: string;
+  search?: string;
   page?: number;
   limit?: number;
 }) {
@@ -99,6 +100,7 @@ export async function fetchGenerations(options?: {
   const { generations, total } = await idb.getGenerations({
     filter: options?.filter,
     collectionId: options?.collectionId,
+    search: options?.search,
     limit,
     offset,
     orderBy: 'desc',

@@ -14,6 +14,7 @@ AI Studio is a local-first, multi-provider workspace for AI image and video gene
 - **Bounded provider transport** — provider submissions and status checks have deadlines, bounded error reads, and normalized public errors.
 - **Safe image ingestion** — reference images have one 10 MB binary limit, strict image types, HTTPS-only remote fetching, redirect limits, and private-network blocking.
 - **Restart-safe protected media** — authenticated provider outputs use credential-free descriptors, POST-only retrieval, and locally persisted Blobs rather than process-memory tokens.
+- **Versioned local backup** — Settings can export and restore non-key IndexedDB data, reference images, prompts, collections, custom/discovered definitions, and downloaded media assets.
 - **Production browser hardening** — a Content Security Policy and security headers are applied through the Next.js configuration.
 - **No persistent server-side credentials** — provider keys are not written to a server database or configuration file.
 - **Stateless async polling** — long-running jobs return credential-free tokens containing only provider job metadata; polling sends the locally stored key in a POST body.
@@ -23,7 +24,8 @@ AI Studio is a local-first, multi-provider workspace for AI image and video gene
 - **Image Studio** — text-to-image, registered image-to-image models, editing, inpainting, variations, upscaling, style controls, and advanced parameters
 - **Video Studio** — text-to-video and image-to-video through registered provider adapters
 - **Cinema Studio** — camera, lens, focal length, aperture, film stock, color grade, lighting, and scene presets
-- **Gallery** — search, favorites, timeline views, metadata, collections, and locally persisted protected outputs
+- **Gallery** — full IndexedDB search, favorites, timeline views, metadata, collections, and locally persisted protected outputs
+- **Local backup and restore** — versioned non-key backups with replace or merge restore modes and downloaded media assets
 - **Prompt tools** — history, templates, suggestions, quick starters, and a structured prompt builder
 - **Model comparison** — run supported image models side by side
 - **Custom and discovered model definitions** — save local definitions for review; they are not executable until an operation contract is registered
@@ -110,6 +112,17 @@ Provider calls use `src/lib/server/provider-request.ts`. Generation submissions 
 For asynchronous providers, the submission route returns a stateless token containing the provider name, model ID, provider job ID, and media kind. The token never includes the provider API key. Each status request is a POST that supplies the token and reads the provider key again from IndexedDB. This allows polling to continue after the local Next.js process restarts without storing provider credentials in process memory.
 
 The shared polling coordinator applies bounded retry, backoff, deadline, cancellation, and terminal-error behavior. `PendingGenerationRecovery` scans IndexedDB after a new page session and resumes older processing jobs through the same polling and persistence path.
+
+## Local backup and restore
+
+Settings → Transfer exports a versioned JSON backup directly in the browser. It includes non-key IndexedDB metadata, prompts, collections, reference images, custom and discovered model definitions, and downloaded media Blobs encoded for transfer. API keys are deliberately excluded and remain in their separate, explicitly warned plain-text key export flow.
+
+Restore supports two modes:
+
+- **Replace** clears non-key AI Studio stores before restoring the backup.
+- **Merge** keeps unrelated local records and replaces records that share the same IndexedDB key.
+
+Both modes preserve stored API keys. Large downloaded videos can produce large backup files because the media is included in the browser-generated JSON.
 
 ## Protected media flow
 
