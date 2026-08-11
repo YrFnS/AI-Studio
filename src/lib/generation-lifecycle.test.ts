@@ -209,7 +209,10 @@ describe('typed generation lifecycle', () => {
       message: 'Provider rejected request',
     });
     expect(failures).toEqual(['Provider rejected request']);
-    expect(updates.at(-1)).toEqual({ status: 'failed' });
+    expect(updates.at(-1)).toEqual({
+      status: 'failed',
+      detail: 'Provider rejected request',
+    });
     expect(handle.getSnapshot()).toMatchObject({
       state: 'failed',
       error: 'Provider rejected request',
@@ -236,6 +239,12 @@ describe('typed generation lifecycle', () => {
           }, { once: true });
         });
       },
+      cancelImpl: async () => ({
+        outcome: 'requested',
+        providerId: 'replicate',
+        remoteAttempted: true,
+        message: 'Cancelled from the comparison dialog',
+      }),
       failImpl: async (_generation, error) => { failures.push(error); },
     }));
 

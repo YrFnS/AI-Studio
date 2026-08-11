@@ -1,6 +1,12 @@
 'use client';
 
 import { generationFetch } from '@/lib/generation-client';
+import { cancelGenerationJob } from '@/lib/generation-cancel-client';
+import {
+  localOnlyCancellationResult,
+  supportsRemoteGenerationCancellation,
+  type GenerationCancellationResult,
+} from '@/lib/generation-cancellation';
 import { downloadProtectedMedia } from '@/lib/protected-media-client';
 import { parseProtectedMediaDescriptor } from '@/lib/protected-media';
 import { getApiKeyForProvider } from '@/lib/idb';
@@ -63,6 +69,8 @@ export interface GenerationLifecycleSnapshot {
   urls?: string[];
   generationIds?: string[];
   error?: string;
+  remoteCancellation?: GenerationCancellationResult['outcome'];
+  remoteCancellationMessage?: string;
   startedAt: number;
   updatedAt: number;
 }
@@ -119,7 +127,7 @@ export interface GenerationJobHandle {
   readonly id: string;
   readonly descriptor: GenerationDescriptor;
   readonly result: Promise<GenerationLifecycleResult>;
-  cancel: (reason?: string) => Promise<void>;
+  cancel: (reason?: string) => Promise<GenerationCancellationResult>;
   subscribe: (listener: GenerationLifecycleListener) => () => void;
   getSnapshot: () => GenerationLifecycleSnapshot;
 }
@@ -146,6 +154,7 @@ export interface GenerationLifecycleDependencies {
   getApiKey: ApiKeyResolver;
   fetchMediaImpl: typeof downloadProtectedMedia;
   createObjectUrl: (blob: Blob) => string;
+  cancelImpl?: typeof cancelGenerationJob;
   now: () => number;
 }
 
@@ -314,6 +323,7 @@ export function createGenerationLifecycleClient(
     descriptor: GenerationDescriptor,
     queue: GenerationLifecycleQueueConfig | undefined,
     externalSignal: AbortSignal | undefined,
+    cancellationApiKey: string | undefined,
     initialState: 'submitting' | 'processing',
     preservedFailureCodes: ReadonlySet<GenerationLifecycleErrorCode>,
     execute: (context: {
@@ -333,6 +343,7 @@ export function createGenerationLifecycleClient(
     let terminal = false;
     let finalizing = false;
     let failurePromise: Promise<void> | null = null;
+    let cancellationPromise: Promise<GenerationCancellationResult> | null = null;
     let snapshot: GenerationLifecycleSnapshot = {
       generationId: descriptor.id,
       state: 'created',
@@ -357,6 +368,7 @@ export function createGenerationLifecycleClient(
     const failTerminal = async (
       error: string,
       state: 'failed' | 'cancelled' = 'failed',
+      cancellation?: GenerationCancellationResult,
     ): Promise<void> => {
       if (terminal) return failurePromise ?? Promise.resolve();
       if (failurePromise) return failurePromise;
@@ -365,8 +377,24 @@ export function createGenerationLifecycleClient(
         await dependencies.failImpl(descriptor, error, providerJobId);
         terminal = true;
         finalizing = false;
-        updateQueue({ status: 'failed' });
-        emit({ state, error, providerJobId });
+        updateQueue({
+          status: 'failed',
+          detail: error,
+          ...(cancellation
+            ? { remoteCancellation: cancellation.outcome }
+            : {}),
+        });
+        emit({
+          state,
+          error,
+          providerJobId,
+          ...(cancellation
+            ? {
+                remoteCancellation: cancellation.outcome,
+                remoteCancellationMessage: cancellation.message,
+              }
+            : {}),
+        });
       })();
       return failurePromise;
     };
@@ -434,6 +462,52 @@ export function createGenerationLifecycleClient(
       };
     };
 
+    const requestRemoteCancellation = async (
+      reason: string,
+    ): Promise<GenerationCancellationResult> => {
+      if (!providerJobId) {
+        return localOnlyCancellationResult(
+          descriptor.providerId,
+          'Generation submission was stopped locally before a provider job id was available.',
+        );
+      }
+
+      if (!supportsRemoteGenerationCancellation(descriptor.providerId)) {
+        return localOnlyCancellationResult(
+          descriptor.providerId,
+          `${descriptor.providerName} does not expose a verified remote cancellation adapter in AI Studio. Tracking stopped locally, but provider work may continue.`,
+        );
+      }
+
+      const apiKey = cancellationApiKey
+        || await dependencies.getApiKey(descriptor.providerId);
+      if (!apiKey) {
+        return localOnlyCancellationResult(
+          descriptor.providerId,
+          'The provider key is unavailable, so AI Studio stopped tracking locally. Provider work may continue until the key is reconnected.',
+        );
+      }
+
+      try {
+        return await (dependencies.cancelImpl ?? cancelGenerationJob)({
+          id: providerJobId,
+          providerId: descriptor.providerId,
+          modelId: descriptor.modelId,
+          apiKey,
+        });
+      } catch (error) {
+        const message = error instanceof Error
+          ? error.message
+          : 'Remote cancellation could not be confirmed.';
+        return {
+          outcome: 'failed',
+          providerId: descriptor.providerId,
+          remoteAttempted: true,
+          message: `${message} AI Studio stopped tracking locally; provider work may continue.`,
+        };
+      }
+    };
+
     const onExternalAbort = () => controller.abort(externalSignal?.reason);
     if (externalSignal) {
       if (externalSignal.aborted) controller.abort(externalSignal.reason);
@@ -468,18 +542,32 @@ export function createGenerationLifecycleClient(
           throw error;
         }
 
-        const terminalError = cancelReason
-          ? new GenerationLifecycleError(cancelReason, {
+        if (cancelReason) {
+          const cancellation = await (
+            cancellationPromise
+            ?? Promise.resolve(localOnlyCancellationResult(
+              descriptor.providerId,
+              cancelReason,
+            ))
+          );
+          const terminalError = new GenerationLifecycleError(
+            cancellation.message,
+            {
               code: 'cancelled',
               providerJobId,
               cause: error,
-            })
-          : error;
-        await failTerminal(
-          terminalError.message,
-          terminalError.code === 'cancelled' ? 'cancelled' : 'failed',
-        );
-        throw terminalError;
+            },
+          );
+          await failTerminal(
+            cancellation.message,
+            'cancelled',
+            cancellation,
+          );
+          throw terminalError;
+        }
+
+        await failTerminal(error.message, 'failed');
+        throw error;
       } finally {
         externalSignal?.removeEventListener('abort', onExternalAbort);
       }
@@ -490,10 +578,26 @@ export function createGenerationLifecycleClient(
       descriptor,
       result,
       cancel: async (reason = 'Generation cancelled by user') => {
-        if (terminal || finalizing) return;
+        if (cancellationPromise) return cancellationPromise;
+        if (terminal || finalizing) {
+          return {
+            outcome: 'already-terminal',
+            providerId: descriptor.providerId,
+            remoteAttempted: false,
+            message: 'Generation already reached a terminal state.',
+          };
+        }
+
         cancelReason = reason;
+        cancellationPromise = requestRemoteCancellation(reason);
         controller.abort(reason);
-        await failTerminal(reason, 'cancelled');
+        const cancellation = await cancellationPromise;
+        await failTerminal(
+          cancellation.message,
+          'cancelled',
+          cancellation,
+        );
+        return cancellation;
       },
       subscribe: (listener) => {
         listeners.add(listener);
@@ -510,6 +614,7 @@ export function createGenerationLifecycleClient(
       descriptor,
       options.queue,
       options.signal,
+      asString(options.body.apiKey),
       'submitting',
       new Set(),
       async ({ signal, setProcessing, complete }) => {
@@ -593,6 +698,7 @@ export function createGenerationLifecycleClient(
       descriptor,
       options.queue,
       options.signal,
+      options.apiKey,
       'processing',
       preserved,
       async ({ signal, setProcessing, complete }) => {

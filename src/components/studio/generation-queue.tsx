@@ -124,6 +124,18 @@ function QueueItemRow({ item, onDismiss }: { item: GenerationQueueItem; onDismis
             {relativeTime(item.createdAt)}
           </span>
         </div>
+        {item.detail && (
+          <p className={`mt-1.5 text-[10px] leading-relaxed ${
+            item.remoteCancellation === 'requested'
+            || item.remoteCancellation === 'already-terminal'
+              ? 'text-emerald-300/80'
+              : item.status === 'failed'
+                ? 'text-red-300/75'
+                : 'text-muted-foreground/70'
+          }`}>
+            {item.detail}
+          </p>
+        )}
         {/* Progress bar for processing items */}
         {item.status === 'processing' && (
           <div className="mt-1.5 h-0.5 w-full overflow-hidden rounded-full bg-white/5">

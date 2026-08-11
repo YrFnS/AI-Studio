@@ -11,6 +11,7 @@ export const MAX_VIDEO_GENERATION_REQUEST_BYTES = 45 * 1024 * 1024;
 export const MAX_EDIT_REQUEST_BYTES = 30 * 1024 * 1024;
 export const MAX_SINGLE_IMAGE_REQUEST_BYTES = 15 * 1024 * 1024;
 export const MAX_STATUS_REQUEST_BYTES = 128 * 1024;
+export const MAX_CANCEL_REQUEST_BYTES = 128 * 1024;
 export const MAX_PROTECTED_MEDIA_REQUEST_BYTES = 128 * 1024;
 
 const MAX_PROMPT_CHARS = 12_000;
@@ -302,6 +303,14 @@ export const statusGenerationRequestSchema = z.object({
   provider: providerNameSchema.optional(),
   modelId: modelIdSchema.optional(),
   apiKey: apiKeySchema.optional(),
+}).strict();
+
+export const cancelGenerationRequestSchema = z.object({
+  id: safeTrimmedString(MAX_PROVIDER_JOB_ID_CHARS)
+    .pipe(z.string().min(1, 'Generation job id is required')),
+  providerId: providerIdSchema,
+  modelId: modelIdSchema.optional(),
+  apiKey: apiKeySchema,
 }).strict();
 
 export const protectedMediaRequestSchema = z.object({

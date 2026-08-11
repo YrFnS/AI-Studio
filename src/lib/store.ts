@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import type { AppTab, SavedPrompt, GenerationStatus, GalleryFilterType, GalleryViewMode, TimelineDateFilter } from '@/lib/types';
+import type { GenerationCancellationOutcome } from '@/lib/generation-cancellation';
 
 export type { AppTab };
 export type { SavedPrompt };
@@ -18,6 +19,8 @@ export interface GenerationQueueItem {
   modelName: string;
   status: GenerationStatus;
   resultUrl?: string;
+  detail?: string;
+  remoteCancellation?: GenerationCancellationOutcome;
   createdAt: number;
 }
 
