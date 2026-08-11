@@ -162,6 +162,18 @@ Automated coverage includes:
 - binary media pass-through without response cloning,
 - and removal of temporary write-capable migration automation.
 
+### Automated validation
+
+The permanent read-only CI workflow passed on the committed reviewed-registration state in run **#484**:
+
+- `bun install --frozen-lockfile`
+- `bun run typecheck`
+- `bun run test`
+- `bun run lint`
+- `bun run build:app`
+
+The Vercel check for that head was not executed because the account reached its build-rate limit. This is tracked separately from the successful standalone production build.
+
 ## Remaining P0 work
 
 ### Live contract verification
