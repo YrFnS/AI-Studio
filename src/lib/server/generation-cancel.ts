@@ -50,6 +50,22 @@ function alreadyTerminal(
 export function createProviderGenerationCanceller(
   fetchImpl: ProviderFetchLike = providerFetch,
 ) {
+  const send = async (
+    provider: string,
+    input: Parameters<typeof globalThis.fetch>[0],
+    init: RequestInit,
+  ): Promise<void> => {
+    const response = await fetchImpl(
+      provider,
+      input,
+      init,
+      { timeoutMs: PROVIDER_STATUS_TIMEOUT_MS },
+    );
+    // Consume even an empty success response so the shared provider transport
+    // can release its deadline timer immediately.
+    await response.arrayBuffer();
+  };
+
   return async function cancelProviderGeneration(
     context: ProviderGenerationCancellationContext,
   ): Promise<GenerationCancellationResult> {
@@ -64,12 +80,10 @@ export function createProviderGenerationCanceller(
       );
     }
 
-    const options = { timeoutMs: PROVIDER_STATUS_TIMEOUT_MS };
-
     try {
       switch (providerId) {
         case 'replicate':
-          await fetchImpl(
+          await send(
             'Replicate',
             `https://api.replicate.com/v1/predictions/${encodeURIComponent(providerJobId)}/cancel`,
             {
@@ -77,7 +91,6 @@ export function createProviderGenerationCanceller(
               headers: { Authorization: `Bearer ${apiKey}` },
               cache: 'no-store',
             },
-            options,
           );
           return result(
             providerId,
@@ -94,7 +107,7 @@ export function createProviderGenerationCanceller(
               false,
             );
           }
-          await fetchImpl(
+          await send(
             'Fal.ai',
             `https://queue.fal.run/${modelId}/requests/${encodeURIComponent(providerJobId)}/cancel`,
             {
@@ -102,7 +115,6 @@ export function createProviderGenerationCanceller(
               headers: { Authorization: `Key ${apiKey}` },
               cache: 'no-store',
             },
-            options,
           );
           return result(
             providerId,
@@ -112,7 +124,7 @@ export function createProviderGenerationCanceller(
         }
 
         case 'runway':
-          await fetchImpl(
+          await send(
             'Runway',
             `https://api.dev.runwayml.com/v1/tasks/${encodeURIComponent(providerJobId)}`,
             {
@@ -123,7 +135,6 @@ export function createProviderGenerationCanceller(
               },
               cache: 'no-store',
             },
-            options,
           );
           return result(
             providerId,
@@ -132,7 +143,7 @@ export function createProviderGenerationCanceller(
           );
 
         case 'luma':
-          await fetchImpl(
+          await send(
             'Luma AI',
             `https://api.lumalabs.ai/dream-machine/v1/generations/${encodeURIComponent(providerJobId)}`,
             {
@@ -140,7 +151,6 @@ export function createProviderGenerationCanceller(
               headers: { Authorization: `Bearer ${apiKey}` },
               cache: 'no-store',
             },
-            options,
           );
           return result(
             providerId,
