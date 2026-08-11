@@ -36,6 +36,17 @@ function failedCancellation(
   };
 }
 
+function cancellationPayload(
+  result: GenerationCancellationResult,
+): Record<string, unknown> {
+  return {
+    outcome: result.outcome,
+    providerId: result.providerId,
+    remoteAttempted: result.remoteAttempted,
+    message: result.message,
+  };
+}
+
 export async function POST(req: NextRequest) {
   let storedToken: string | null = null;
   let providerId = 'unknown';
@@ -92,10 +103,12 @@ export async function POST(req: NextRequest) {
       deleteGenerationJob(storedToken);
     }
 
-    return noStoreJson(result);
+    return noStoreJson(cancellationPayload(result));
   } catch (error) {
     if (error instanceof ProviderRequestError) {
-      return noStoreJson(failedCancellation(providerId, error));
+      return noStoreJson(cancellationPayload(
+        failedCancellation(providerId, error),
+      ));
     }
 
     return generationErrorResponse(error, {
