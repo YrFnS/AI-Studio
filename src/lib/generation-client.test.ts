@@ -95,6 +95,41 @@ describe('explicit generation client', () => {
     expect(submittedBodies[0].apiKey).toBe('request-key');
   });
 
+  test('passes protected media through without cloning the binary response', async () => {
+    let cloneCalls = 0;
+    const binaryResponse = new Response(
+      new Blob(['video'], { type: 'video/mp4' }),
+      { headers: { 'Content-Type': 'video/mp4' } },
+    );
+    Object.defineProperty(binaryResponse, 'clone', {
+      value: () => {
+        cloneCalls += 1;
+        throw new Error('binary response must not be cloned');
+      },
+    });
+
+    const client = createGenerationClient({
+      fetchImpl: async () => binaryResponse,
+      getApiKey: async () => null,
+    });
+
+    const response = await client.fetch('/api/generate/media', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        version: 1,
+        providerId: 'google-aistudio',
+        providerJobId: 'operations/video-123',
+        kind: 'video',
+        apiKey: 'request-key',
+      }),
+    });
+
+    expect(response).toBe(binaryResponse);
+    expect(cloneCalls).toBe(0);
+    expect((await response.blob()).type).toBe('video/mp4');
+  });
+
   test('converts legacy GET polling into a credential-safe POST', async () => {
     const calls: Array<{ input: RequestInfo | URL; init?: RequestInit }> = [];
     const client = createGenerationClient({
