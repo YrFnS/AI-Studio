@@ -37,6 +37,7 @@ import {
   Sparkles,
   Pencil,
   Telescope,
+  ClipboardCheck,
 } from 'lucide-react';
 
 import { useAppStore } from '@/lib/store';
@@ -44,6 +45,7 @@ import { maskKey as idbMaskKey, getAllApiKeys, saveApiKey, deleteApiKey, clearAl
 import { loadAllModels, getStaticProviders, providerSupportsDiscovery } from '@/lib/model-service';
 import { useApiKeys } from '@/hooks/use-api-keys';
 import { ModelRegistrationReview } from '@/components/studio/model-registration-review';
+import { P0EvidenceLab } from '@/components/studio/p0-evidence-lab';
 import {
   createAIStudioBackup,
   downloadAIStudioBackup,
@@ -2529,7 +2531,7 @@ export function Settings() {
             <div>
               <h2 className="text-xl font-bold text-foreground">Settings</h2>
               <p className="text-sm text-muted-foreground">
-                Configure API keys, manage models, and transfer settings
+                Configure API keys, review model contracts, capture P0 evidence, and transfer local data
               </p>
             </div>
           </motion.div>
@@ -2537,7 +2539,7 @@ export function Settings() {
           {/* Tabs */}
           <Tabs
             value={settingsTab}
-            onValueChange={(v) => setSettingsTab(v as 'providers' | 'models' | 'review' | 'transfer')}
+            onValueChange={(v) => setSettingsTab(v as 'providers' | 'models' | 'review' | 'evidence' | 'transfer')}
             className="w-full"
           >
             <TabsList className="bg-surface border border-border/40 p-1 rounded-xl">
@@ -2561,6 +2563,13 @@ export function Settings() {
               >
                 <Shield className="h-4 w-4" />
                 Review
+              </TabsTrigger>
+              <TabsTrigger
+                value="evidence"
+                className="rounded-lg gap-2 data-[state=active]:bg-[#d9ff00]/10 data-[state=active]:text-[#d9ff00] data-[state=active]:shadow-none px-4 transition-all duration-200"
+              >
+                <ClipboardCheck className="h-4 w-4" />
+                Evidence
               </TabsTrigger>
               <TabsTrigger
                 value="transfer"
@@ -2598,6 +2607,16 @@ export function Settings() {
                 transition={{ duration: 0.2 }}
               >
                 <ModelRegistrationReview />
+              </motion.div>
+            </TabsContent>
+
+            <TabsContent value="evidence" className="mt-6">
+              <motion.div
+                initial={{ opacity: 0, x: -10 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ duration: 0.2 }}
+              >
+                <P0EvidenceLab />
               </motion.div>
             </TabsContent>
 

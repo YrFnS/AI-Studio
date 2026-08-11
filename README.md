@@ -11,6 +11,7 @@ AI Studio is a local-first, multi-provider workspace for AI image and video gene
 - **Typed generation lifecycle** — primary studios, model comparison, editing, and derived actions share one submit, poll, persist, queue, cancellation, and recovery contract.
 - **Authoritative operation registry** — every executable provider/model/operation combination declares its owning route, adapter, and verification level. Raw catalog capability labels cannot make a model executable.
 - **Reviewed model registration** — custom and discovered definitions remain inert until mapped to a bounded adapter profile, documented, acknowledged, and locally approved; routes revalidate the approval on every request.
+- **P0 evidence lab** — Settings captures credential-free live-test checkpoints, inspects durable IndexedDB outcomes, verifies duplicate-free recovery, and exports reviewable evidence packets.
 - **Strict route schemas** — generation routes reject malformed, oversized, unknown, or out-of-range input before provider contact.
 - **Bounded provider transport** — provider submissions and status checks have deadlines, bounded error reads, and normalized public errors.
 - **Safe image ingestion** — reference images have one 10 MB binary limit, strict image types, HTTPS-only remote fetching, redirect limits, and private-network blocking.
@@ -30,6 +31,7 @@ AI Studio is a local-first, multi-provider workspace for AI image and video gene
 - **Prompt tools** — history, templates, suggestions, quick starters, and a structured prompt builder
 - **Model comparison** — run supported image models side by side
 - **Custom and discovered model review** — save inert candidates, review provider documentation, approve bounded adapter contracts, and revoke selector access at any time
+- **Live evidence lab** — record immediate results, restart recovery, protected media, provider cancellation, and contract smoke tests without exporting keys
 - **Generation queue** — monitor asynchronous work without blocking the studio
 - **Keyboard shortcuts** — fast navigation and generation controls
 
@@ -127,6 +129,14 @@ Provider calls use `src/lib/server/provider-request.ts`. Generation submissions 
 For asynchronous providers, the submission route returns a stateless token containing the provider name, model ID, provider job ID, and media kind. The token never includes the provider API key. Each status request is a POST that supplies the token and reads the provider key again from IndexedDB. This allows polling to continue after the local Next.js process restarts without storing provider credentials in process memory.
 
 The shared polling coordinator applies bounded retry, backoff, deadline, cancellation, and terminal-error behavior. `PendingGenerationRecovery` scans IndexedDB after a new page session and resumes older processing jobs through the same polling and persistence path.
+
+## P0 live evidence
+
+Settings → Evidence creates local checkpoints tied to durable generation IDs. It can verify completed media, duplicate provider-job records, restart-session changes, protected-media Blob persistence, and local Blob URL recreation. Provider-side facts that the browser cannot observe require an explicit operator confirmation.
+
+Evidence records are stored under the local `ai-studio-p0-evidence-v1` key, included in normal non-key backups, and exportable as a separate JSON packet declaring `includesApiKeys: false`. Notes that resemble API keys or authorization headers are rejected.
+
+The complete operator procedure is documented in [docs/P0-LIVE-EVIDENCE-RUNBOOK.md](docs/P0-LIVE-EVIDENCE-RUNBOOK.md). A passing evidence record supports review but does not automatically promote a source contract to `live-verified`.
 
 ## Local backup and restore
 

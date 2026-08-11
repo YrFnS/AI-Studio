@@ -26,6 +26,7 @@ const REGULAR_STORE_NAMES = BACKUP_STORE_NAMES.filter(
 const LOCAL_STORAGE_KEYS = [
   'ai-studio-prompt-history',
   'ai-studio-demo-data-v2',
+  'ai-studio-p0-evidence-v1',
 ] as const;
 
 const MAX_RECORDS_PER_STORE = 100_000;

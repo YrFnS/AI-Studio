@@ -140,6 +140,17 @@ P0 is complete only when each request has one durable lifecycle, every exposed p
 - Gallery search now runs across the complete filtered IndexedDB result set before pagination and matches prompt, negative prompt, provider, model, type, and status metadata.
 - Added stale-search response protection so an older IndexedDB request cannot overwrite a newer query.
 
+### Live evidence capture and audit readiness
+
+- Added Settings → Evidence as a credential-free checkpoint and verification workspace.
+- Evidence records bind to durable generation IDs and retain the provider job ID and status captured before restart.
+- Automatic checks cover completed result presence, provider/model matching, duplicate provider-job records, processing checkpoints, runtime reloads, protected-media Blob persistence, and local Blob URL recreation.
+- Server restarts, live provider acceptance, and provider-side terminal cancellation require explicit operator confirmation rather than being inferred.
+- Cancellation gates pass only for remotely requested or already-terminal outcomes with provider-side confirmation; local-only and failed outcomes remain diagnostic evidence.
+- Evidence exports declare `includesApiKeys: false` and reject notes resembling API keys or authorization headers.
+- P0 evidence records are included in the normal non-key local backup.
+- Added `docs/P0-LIVE-EVIDENCE-RUNBOOK.md` with the exact immediate-image, restart-recovery, protected-media, cancellation, contract-smoke, export, and promotion procedure.
+
 ### Regression coverage
 
 Automated coverage includes:
@@ -153,6 +164,7 @@ Automated coverage includes:
 - visible missing-key recovery controls and key-triggered rescans,
 - polling retry/deadline behavior,
 - registry, route, reviewed-registration profile, selector decoration, and server revalidation ownership,
+- credential-free evidence packet, restart-checkpoint, duplicate-record, protected-media, and cancellation-confirmation ownership,
 - Replicate official-model/version routing,
 - strict request parsing and byte limits,
 - provider error and timeout normalization,
