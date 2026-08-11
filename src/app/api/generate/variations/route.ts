@@ -104,6 +104,7 @@ export async function POST(req: NextRequest) {
       imageUrl,
       prompt,
       negativePrompt,
+      reviewedRegistration,
       apiKey,
       variationStrength,
       seed,
@@ -121,7 +122,7 @@ export async function POST(req: NextRequest) {
       }, 404);
     }
 
-    requireModelOperation(provider.name, modelId, 'variation', 'variations');
+    requireModelOperation(provider.name, modelId, 'variation', 'variations', reviewedRegistration);
 
     let urls: string[];
     switch (provider.name) {

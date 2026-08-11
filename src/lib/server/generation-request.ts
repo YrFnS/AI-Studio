@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { approvedModelRegistrationSchema } from '@/lib/model-registration';
+
 import {
   MAX_REFERENCE_IMAGE_BYTES,
   REFERENCE_IMAGE_MIME_TYPES,
@@ -222,6 +224,7 @@ export const imageGenerationRequestSchema = z.object({
   hiresScale: z.number().finite().min(1).max(4).optional(),
   hiresSteps: z.number().int().min(1).max(100).optional(),
   hiresDenoise: z.number().finite().min(0).max(1).optional(),
+  reviewedRegistration: approvedModelRegistrationSchema.optional(),
   apiKey: apiKeySchema,
 }).strict();
 
@@ -234,6 +237,7 @@ export const videoGenerationRequestSchema = z.object({
   imageUrl: optionalImageInputSchema,
   startFrameUrl: optionalImageInputSchema,
   endFrameUrl: optionalImageInputSchema,
+  reviewedRegistration: approvedModelRegistrationSchema.optional(),
   apiKey: apiKeySchema,
 }).strict().superRefine((value, context) => {
   if (value.endFrameUrl && !value.startFrameUrl && !value.imageUrl) {
@@ -256,6 +260,7 @@ export const editGenerationRequestSchema = z.object({
   quality: boundedLabelSchema,
   n: z.number().int().min(1).max(4).optional(),
   negativePrompt: negativePromptSchema,
+  reviewedRegistration: approvedModelRegistrationSchema.optional(),
   apiKey: apiKeySchema,
 }).strict().superRefine((value, context) => {
   if (!value.providerId && !value.providerName) {
@@ -273,6 +278,7 @@ export const upscaleGenerationRequestSchema = z.object({
   imageUrl: generationImageInputSchema,
   prompt: safeTrimmedString(MAX_PROMPT_CHARS).optional(),
   negativePrompt: negativePromptSchema,
+  reviewedRegistration: approvedModelRegistrationSchema.optional(),
   apiKey: apiKeySchema,
   upscaleFactor: z.union([z.literal(2), z.literal(4)]).default(2),
 }).strict();
@@ -283,6 +289,7 @@ export const variationGenerationRequestSchema = z.object({
   imageUrl: generationImageInputSchema,
   prompt: promptSchema,
   negativePrompt: negativePromptSchema,
+  reviewedRegistration: approvedModelRegistrationSchema.optional(),
   apiKey: apiKeySchema,
   variationStrength: z.number().finite().min(0.3).max(1).default(0.7),
   seed: seedSchema,
@@ -293,6 +300,7 @@ export const imageToVideoGenerationRequestSchema = z.object({
   modelId: modelIdSchema,
   imageUrl: generationImageInputSchema,
   prompt: promptSchema,
+  reviewedRegistration: approvedModelRegistrationSchema.optional(),
   apiKey: apiKeySchema,
   duration: z.coerce.number().int().min(3).max(15).default(5),
   aspectRatio: z.enum(['16:9', '9:16', '1:1', '4:3', '3:4']).default('16:9'),

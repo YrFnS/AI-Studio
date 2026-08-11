@@ -15,6 +15,9 @@ const skippedFiles = new Set([
   // Pure planning module: it returns endpoint strings but performs no fetch.
   path.normalize('src/lib/generation-operation.ts'),
   path.normalize('src/lib/generation-operation.test.ts'),
+  // Pure IndexedDB registration/catalog helper; it returns route strings but
+  // does not perform generation network requests itself.
+  path.normalize('src/lib/model-registration-client.ts'),
   path.normalize('src/lib/generation-poller.ts'),
   path.normalize('src/lib/generation-poller.test.ts'),
   path.normalize('src/components/secure-provider-fetch-bridge.tsx'),

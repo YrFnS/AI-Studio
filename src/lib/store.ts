@@ -190,8 +190,8 @@ interface AppState {
   setGallerySelectedIds: (ids: string[]) => void;
   
   // Settings state
-  settingsTab: 'providers' | 'models' | 'transfer';
-  setSettingsTab: (tab: 'providers' | 'models' | 'transfer') => void;
+  settingsTab: 'providers' | 'models' | 'review' | 'transfer';
+  setSettingsTab: (tab: 'providers' | 'models' | 'review' | 'transfer') => void;
   
   // Generation result
   latestResult: string | null;

@@ -15,6 +15,7 @@ const BACKUP_STORE_NAMES = [
   'collectionItems',
   'customModels',
   'discoveredModels',
+  'modelRegistrations',
   'mediaAssets',
 ] as const;
 
@@ -49,6 +50,7 @@ export interface AIStudioBackupStores {
   collectionItems: Record<string, unknown>[];
   customModels: Record<string, unknown>[];
   discoveredModels: Record<string, unknown>[];
+  modelRegistrations: Record<string, unknown>[];
   mediaAssets: BackupMediaAsset[];
 }
 

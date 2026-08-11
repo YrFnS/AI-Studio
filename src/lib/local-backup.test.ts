@@ -19,7 +19,7 @@ function emptyBackup(): AIStudioLocalBackup {
     version: AI_STUDIO_BACKUP_VERSION,
     app: 'ai-studio',
     exportedAt: '2026-08-11T00:00:00.000Z',
-    databaseVersion: 6,
+    databaseVersion: 7,
     includesApiKeys: false,
     stores: {
       referenceImages: [],
@@ -29,6 +29,7 @@ function emptyBackup(): AIStudioLocalBackup {
       collectionItems: [],
       customModels: [],
       discoveredModels: [],
+      modelRegistrations: [],
       mediaAssets: [],
     },
     localStorage: {},

@@ -64,6 +64,7 @@ export async function POST(req: NextRequest) {
       imageUrl,
       prompt,
       negativePrompt,
+      reviewedRegistration,
       apiKey,
       upscaleFactor,
     } = await parseGenerationRequest(
@@ -80,7 +81,7 @@ export async function POST(req: NextRequest) {
       }, 404);
     }
 
-    requireModelOperation(provider.name, modelId, 'upscale', 'upscale');
+    requireModelOperation(provider.name, modelId, 'upscale', 'upscale', reviewedRegistration);
 
     if (provider.name !== 'stability') {
       return noStoreJson({

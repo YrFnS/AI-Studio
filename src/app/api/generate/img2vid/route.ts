@@ -161,6 +161,7 @@ export async function POST(req: NextRequest) {
       modelId,
       imageUrl,
       prompt,
+      reviewedRegistration,
       apiKey,
       duration,
       aspectRatio,
@@ -183,6 +184,7 @@ export async function POST(req: NextRequest) {
       modelId,
       'image-to-video',
       'img2vid',
+      reviewedRegistration,
     );
 
     let pollingModelId = modelId;

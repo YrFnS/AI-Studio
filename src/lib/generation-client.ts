@@ -5,6 +5,11 @@ import {
   createGenerationStatusCoordinator,
   type GenerationStatusRequest,
 } from '@/lib/generation-poller';
+import {
+  decorateProviderCatalogWithApprovedRegistrations,
+  findApprovedModelRegistration,
+  resolveGenerationRequestRegistrationContext,
+} from '@/lib/model-registration-client';
 
 type FetchLike = (
   input: RequestInfo | URL,
@@ -176,6 +181,27 @@ export function createGenerationClient(
     const pathname = requestUrl.pathname;
     const headers = getRequestHeaders(input, init);
 
+    if (pathname === '/api/providers' && method === 'GET') {
+      const response = await fetchImpl(input, init);
+      if (!response.ok) return response;
+      try {
+        const catalog = await response.json() as unknown;
+        const decorated = await decorateProviderCatalogWithApprovedRegistrations(catalog);
+        const responseHeaders = new Headers(response.headers);
+        responseHeaders.set('Content-Type', 'application/json');
+        responseHeaders.set('Cache-Control', 'no-store');
+        responseHeaders.delete('Content-Length');
+        responseHeaders.delete('Content-Encoding');
+        return new Response(JSON.stringify(decorated), {
+          status: response.status,
+          statusText: response.statusText,
+          headers: responseHeaders,
+        });
+      } catch {
+        return failedResponse('Provider catalog could not be decorated with reviewed models');
+      }
+    }
+
     if (pathname === '/api/generate/status') {
       // The shared async poller owns its complete loop and marks these requests
       // so the per-call coordinator does not add another layer of backoff.
@@ -235,6 +261,26 @@ export function createGenerationClient(
           asString(payload.providerId)
           || asString(payload.provider)
           || '';
+        const modelId = asString(payload.modelId);
+        const registrationContext = resolveGenerationRequestRegistrationContext(
+          pathname,
+          payload,
+        );
+
+        if (
+          providerId
+          && modelId
+          && registrationContext
+          && typeof indexedDB !== 'undefined'
+          && !isRecord(payload.reviewedRegistration)
+        ) {
+          const registration = await findApprovedModelRegistration({
+            providerId,
+            modelId,
+            ...registrationContext,
+          });
+          if (registration) payload.reviewedRegistration = registration;
+        }
 
         if (providerId && !asString(payload.apiKey)) {
           const storedKey = await getApiKey(providerId);

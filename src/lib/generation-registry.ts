@@ -1,4 +1,8 @@
 import { MODELS } from '@/lib/providers-data';
+import {
+  approvedRegistrationToContract,
+  requireApprovedModelRegistration,
+} from '@/lib/model-registration';
 
 export const GENERATION_OPERATIONS = [
   'text-to-image',
@@ -298,6 +302,10 @@ function modelKey(providerName: string, modelId: string): string {
   return `${providerName}::${modelId}`;
 }
 
+const CATALOG_MODEL_KEYS = new Set(
+  (MODELS as CatalogModel[]).map((model) => modelKey(model.providerName, model.modelId)),
+);
+
 const REGISTRY = new Map<string, RegisteredModelOperations>();
 
 for (const model of MODELS as CatalogModel[]) {
@@ -325,7 +333,8 @@ export class GenerationRegistryError extends Error {
   readonly code:
     | 'model-not-registered'
     | 'operation-not-supported'
-    | 'route-not-supported';
+    | 'route-not-supported'
+    | 'reviewed-registration-invalid';
 
   constructor(
     message: string,
@@ -390,33 +399,61 @@ export function requireModelOperation(
   modelId: string,
   operation: GenerationOperationId,
   route?: GenerationRouteId,
+  reviewedRegistration?: unknown,
 ): ModelOperationContract {
   const entry = getRegisteredModel(providerName, modelId);
-  if (!entry) {
+  if (entry) {
+    const contract = entry.contracts.find(
+      (candidate) => candidate.operation === operation,
+    );
+    if (!contract) {
+      throw new GenerationRegistryError(
+        `${modelId} does not support ${operation} through ${providerName}.`,
+        'operation-not-supported',
+      );
+    }
+
+    if (route && !contract.routes.includes(route)) {
+      throw new GenerationRegistryError(
+        `${modelId} cannot run ${operation} through the ${route} route.`,
+        'route-not-supported',
+      );
+    }
+    return contract;
+  }
+
+  // A local review cannot override or broaden a model already present in the
+  // shipped catalog. Those changes require a normal source review.
+  if (CATALOG_MODEL_KEYS.has(modelKey(providerName, modelId))) {
+    throw new GenerationRegistryError(
+      `Model ${modelId} is present in the catalog but has no executable ${operation} contract.`,
+      'model-not-registered',
+    );
+  }
+
+  if (!reviewedRegistration || !route) {
     throw new GenerationRegistryError(
       `Model ${modelId} is not registered for executable generation through ${providerName}.`,
       'model-not-registered',
     );
   }
 
-  const contract = entry.contracts.find(
-    (candidate) => candidate.operation === operation,
-  );
-  if (!contract) {
+  try {
+    const registration = requireApprovedModelRegistration(reviewedRegistration, {
+      providerName,
+      modelId,
+      operation,
+      route,
+    });
+    return approvedRegistrationToContract(registration);
+  } catch (error) {
     throw new GenerationRegistryError(
-      `${modelId} does not support ${operation} through ${providerName}.`,
-      'operation-not-supported',
+      error instanceof Error
+        ? error.message
+        : 'The reviewed model registration is invalid.',
+      'reviewed-registration-invalid',
     );
   }
-
-  if (route && !contract.routes.includes(route)) {
-    throw new GenerationRegistryError(
-      `${modelId} cannot run ${operation} through the ${route} route.`,
-      'route-not-supported',
-    );
-  }
-
-  return contract;
 }
 
 export function operationsToLegacyCapabilities(

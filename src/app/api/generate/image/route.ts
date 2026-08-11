@@ -70,6 +70,7 @@ export async function POST(req: NextRequest) {
       hiresScale,
       hiresSteps,
       hiresDenoise,
+      reviewedRegistration,
       apiKey,
     } = await parseGenerationRequest(
       req,
@@ -90,6 +91,7 @@ export async function POST(req: NextRequest) {
       modelId,
       inputImageUrl ? 'image-to-image' : 'text-to-image',
       'image',
+      reviewedRegistration,
     );
 
     const params: GenerateParams = {

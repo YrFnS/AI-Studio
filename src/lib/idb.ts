@@ -4,9 +4,10 @@
 // ---------------------------------------------------------------------------
 
 import { matchesGenerationSearch } from '@/lib/gallery-search';
+import type { ModelRegistrationRecord } from '@/lib/model-registration';
 
 const DB_NAME = 'ai-studio';
-const DB_VERSION = 6;
+const DB_VERSION = 7;
 
 // ---------------------------------------------------------------------------
 // Open / upgrade DB
@@ -74,6 +75,15 @@ export function openAIStudioDatabase(): Promise<IDBDatabase> {
         const mediaStore = db.createObjectStore('mediaAssets', { keyPath: 'id' });
         mediaStore.createIndex('generationId', 'generationId', { unique: true });
         mediaStore.createIndex('createdAt', 'createdAt', { unique: false });
+      }
+      // v7: locally reviewed custom/discovered model contracts
+      if (!db.objectStoreNames.contains('modelRegistrations')) {
+        const registrationStore = db.createObjectStore('modelRegistrations', { keyPath: 'id' });
+        registrationStore.createIndex('sourceId', 'sourceId', { unique: false });
+        registrationStore.createIndex('providerName', 'providerName', { unique: false });
+        registrationStore.createIndex('modelId', 'modelId', { unique: false });
+        registrationStore.createIndex('status', 'status', { unique: false });
+        registrationStore.createIndex('updatedAt', 'updatedAt', { unique: false });
       }
     };
   });
@@ -686,14 +696,83 @@ export async function getAllCustomModels(): Promise<CustomModelRecord[]> {
 }
 
 export async function deleteCustomModel(id: string): Promise<void> {
-  const { transaction, stores } = await tx('customModels', 'readwrite');
-  stores['customModels'].delete(id);
+  const { transaction, stores } = await tx(
+    ['customModels', 'modelRegistrations'],
+    'readwrite',
+  );
+  stores.customModels.delete(id);
+  const registrations = await reqToPromise<ModelRegistrationRecord[]>(
+    stores.modelRegistrations.index('sourceId').getAll(id),
+  );
+  for (const registration of registrations) {
+    stores.modelRegistrations.delete(registration.id);
+  }
   await txComplete(transaction);
 }
 
 export async function clearAllCustomModels(): Promise<void> {
-  const { transaction, stores } = await tx('customModels', 'readwrite');
-  stores['customModels'].clear();
+  const { transaction, stores } = await tx(
+    ['customModels', 'modelRegistrations'],
+    'readwrite',
+  );
+  stores.customModels.clear();
+  const registrations = await reqToPromise<ModelRegistrationRecord[]>(
+    stores.modelRegistrations.getAll(),
+  );
+  for (const registration of registrations) {
+    if (registration.source === 'custom') {
+      stores.modelRegistrations.delete(registration.id);
+    }
+  }
+  await txComplete(transaction);
+}
+
+// ===========================================================================
+// Reviewed Model Registrations
+// ===========================================================================
+
+export type { ModelRegistrationRecord };
+
+export async function saveModelRegistration(
+  registration: ModelRegistrationRecord,
+): Promise<void> {
+  const { transaction, stores } = await tx('modelRegistrations', 'readwrite');
+  stores.modelRegistrations.put(registration);
+  await txComplete(transaction);
+}
+
+export async function getModelRegistration(
+  id: string,
+): Promise<ModelRegistrationRecord | undefined> {
+  const { stores } = await tx('modelRegistrations');
+  return reqToPromise(stores.modelRegistrations.get(id));
+}
+
+export async function getAllModelRegistrations(): Promise<ModelRegistrationRecord[]> {
+  const { stores } = await tx('modelRegistrations');
+  const registrations = await reqToPromise<ModelRegistrationRecord[]>(
+    stores.modelRegistrations.getAll(),
+  );
+  return registrations.sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+export async function getApprovedModelRegistrations(): Promise<ModelRegistrationRecord[]> {
+  const { stores } = await tx('modelRegistrations');
+  const approved = await reqToPromise<ModelRegistrationRecord[]>(
+    stores.modelRegistrations.index('status').getAll('approved'),
+  );
+  return approved.sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+export async function deleteModelRegistration(id: string): Promise<void> {
+  const { transaction, stores } = await tx('modelRegistrations', 'readwrite');
+  stores.modelRegistrations.delete(id);
+  await txComplete(transaction);
+}
+
+export async function clearAllModelRegistrations(): Promise<void> {
+  const { transaction, stores } = await tx('modelRegistrations', 'readwrite');
+  stores.modelRegistrations.clear();
   await txComplete(transaction);
 }
 

@@ -257,6 +257,7 @@ export async function POST(req: NextRequest) {
       imageUrl,
       startFrameUrl,
       endFrameUrl,
+      reviewedRegistration,
       apiKey,
     } = await parseGenerationRequest(
       req,
@@ -278,6 +279,7 @@ export async function POST(req: NextRequest) {
       modelId,
       sourceImage ? 'image-to-video' : 'text-to-video',
       'video',
+      reviewedRegistration,
     );
 
     const params: VideoRequestParams = {

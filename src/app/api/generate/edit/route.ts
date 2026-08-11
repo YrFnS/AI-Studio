@@ -109,6 +109,7 @@ export async function POST(req: NextRequest) {
       quality,
       n,
       negativePrompt,
+      reviewedRegistration,
       apiKey,
     } = await parseGenerationRequest(
       req,
@@ -132,6 +133,7 @@ export async function POST(req: NextRequest) {
       modelId,
       mask ? 'inpaint' : 'edit',
       'edit',
+      reviewedRegistration,
     );
 
     let images: string[];

@@ -22,7 +22,7 @@ describe('protected media persistence ownership', () => {
     const idb = await source('src/lib/idb.ts');
     const persistence = await source('src/lib/generation-persistence.ts');
 
-    expect(idb).toContain("const DB_VERSION = 6");
+    expect(idb).toContain("const DB_VERSION = 7");
     expect(idb).toContain("createObjectStore('mediaAssets'");
     expect(idb).toContain('materializeGenerationMedia');
     expect(idb).toContain('URL.createObjectURL(asset.blob)');

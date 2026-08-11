@@ -43,6 +43,7 @@ import { useAppStore } from '@/lib/store';
 import { maskKey as idbMaskKey, getAllApiKeys, saveApiKey, deleteApiKey, clearAllApiKeys, saveCustomModel, getAllCustomModels, deleteCustomModel, type CustomModelRecord, clearDiscoveredModelsCache } from '@/lib/idb';
 import { loadAllModels, getStaticProviders, providerSupportsDiscovery } from '@/lib/model-service';
 import { useApiKeys } from '@/hooks/use-api-keys';
+import { ModelRegistrationReview } from '@/components/studio/model-registration-review';
 import {
   createAIStudioBackup,
   downloadAIStudioBackup,
@@ -1157,7 +1158,7 @@ function CustomModelsSection() {
         description: formDescription.trim() || undefined,
       });
 
-      toast.success(`Model "${formName}" added successfully`);
+      toast.success(`Model candidate "${formName}" saved for review`);
       resetForm();
       setDialogOpen(false);
       fetchData({ force: true });
@@ -1225,14 +1226,14 @@ function CustomModelsSection() {
             <DialogTrigger asChild>
               <Button className="gap-2 bg-[#d9ff00] text-background hover:bg-[#c5eb00]">
                 <Plus className="h-4 w-4" />
-                Add Custom Model
+                Add Model Candidate
               </Button>
             </DialogTrigger>
             <DialogContent className="glass-strong sm:max-w-lg max-h-[90vh] overflow-y-auto">
             <DialogHeader>
-              <DialogTitle className="text-foreground">Add Custom Model</DialogTitle>
+              <DialogTitle className="text-foreground">Add Model Candidate</DialogTitle>
               <DialogDescription className="text-muted-foreground">
-                Add a new model to a provider. Make sure the model ID matches the API identifier.
+                Save a non-executable model candidate. It must pass the Registration Review workflow before it can appear in generation selectors.
               </DialogDescription>
             </DialogHeader>
 
@@ -1430,7 +1431,7 @@ function CustomModelsSection() {
 
                   {/* Explanation */}
                   <p className="text-[10px] text-muted-foreground/50 leading-relaxed">
-                    Type and capabilities are auto-detected from the provider and model ID.
+                    Type and capabilities are candidate metadata only; executable operations are granted by reviewed adapter profiles.
                     {formCapabilities.length > 1 && ' This model supports multiple capabilities.'}
                   </p>
                 </div>
@@ -1580,7 +1581,7 @@ function CustomModelsSection() {
                 ) : (
                   <Plus className="h-4 w-4" />
                 )}
-                Add Model
+                Save Candidate
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -2536,7 +2537,7 @@ export function Settings() {
           {/* Tabs */}
           <Tabs
             value={settingsTab}
-            onValueChange={(v) => setSettingsTab(v as 'providers' | 'models' | 'transfer')}
+            onValueChange={(v) => setSettingsTab(v as 'providers' | 'models' | 'review' | 'transfer')}
             className="w-full"
           >
             <TabsList className="bg-surface border border-border/40 p-1 rounded-xl">
@@ -2553,6 +2554,13 @@ export function Settings() {
               >
                 <Box className="h-4 w-4" />
                 Models
+              </TabsTrigger>
+              <TabsTrigger
+                value="review"
+                className="rounded-lg gap-2 data-[state=active]:bg-[#d9ff00]/10 data-[state=active]:text-[#d9ff00] data-[state=active]:shadow-none px-4 transition-all duration-200"
+              >
+                <Shield className="h-4 w-4" />
+                Review
               </TabsTrigger>
               <TabsTrigger
                 value="transfer"
@@ -2580,6 +2588,16 @@ export function Settings() {
                 transition={{ duration: 0.2 }}
               >
                 <CustomModelsSection />
+              </motion.div>
+            </TabsContent>
+
+            <TabsContent value="review" className="mt-6">
+              <motion.div
+                initial={{ opacity: 0, x: -10 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ duration: 0.2 }}
+              >
+                <ModelRegistrationReview />
               </motion.div>
             </TabsContent>
 
