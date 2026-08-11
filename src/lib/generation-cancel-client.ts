@@ -1,6 +1,6 @@
 'use client';
 
-import { generationFetch } from '@/lib/generation-client';
+import { generationFetch as fetch } from '@/lib/generation-client';
 import type {
   GenerationCancellationRequest,
   GenerationCancellationResult,
@@ -35,7 +35,7 @@ async function readPayload(response: Response): Promise<Record<string, unknown>>
 }
 
 export function createGenerationCancellationClient(
-  fetchImpl: FetchLike = generationFetch,
+  fetchImpl: FetchLike = fetch,
 ) {
   return async function cancelGenerationJob(
     request: GenerationCancellationRequest,
