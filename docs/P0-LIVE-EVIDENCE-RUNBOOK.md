@@ -40,6 +40,12 @@ bun run lint
 bun run build:app
 ```
 
+The focused evidence-lab regression suite can also be run independently:
+
+```bash
+bun run evidence:check
+```
+
 Then start the app:
 
 ```bash
