@@ -18,8 +18,8 @@ jobs:
   migrate-cancellation-recovery:
     name: Apply cancellation and recovery migration
     if: >-
-      github.event_name == 'push' &&
-      github.ref == 'refs/heads/agent/p0-runtime-integrity' &&
+      github.event_name == 'pull_request' &&
+      github.head_ref == 'agent/p0-runtime-integrity' &&
       github.actor != 'github-actions[bot]'
     permissions:
       contents: write
