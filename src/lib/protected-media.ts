@@ -1,4 +1,5 @@
 export const PROTECTED_MEDIA_DESCRIPTOR_VERSION = 1 as const;
+export const MAX_PROTECTED_MEDIA_BYTES = 512 * 1024 * 1024;
 
 export type ProtectedMediaKind = 'video' | 'image';
 
