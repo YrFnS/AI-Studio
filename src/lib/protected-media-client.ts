@@ -1,9 +1,10 @@
 'use client';
 
 import { generationFetch } from '@/lib/generation-client';
-import type { ProtectedMediaDescriptor } from '@/lib/protected-media';
-
-export const MAX_PROTECTED_MEDIA_BYTES = 512 * 1024 * 1024;
+import {
+  MAX_PROTECTED_MEDIA_BYTES,
+  type ProtectedMediaDescriptor,
+} from '@/lib/protected-media';
 
 type FetchLike = (
   input: RequestInfo | URL,
