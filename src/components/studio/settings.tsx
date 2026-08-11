@@ -880,7 +880,6 @@ function CustomModelsSection() {
 
   useEffect(() => {
     fetchData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Model stats ---------------------------------------------------------------

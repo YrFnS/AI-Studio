@@ -85,6 +85,19 @@ describe('P0 evidence verification', () => {
     }));
     expect(checks.find((item) => item.id === 'no-duplicate-provider-job')?.passed)
       .toBe(false);
+
+    const immediate = generation({ providerJobId: undefined });
+    const correlatedDuplicate = generation({
+      id: 'img-live-correlated-duplicate',
+      providerJobId: undefined,
+      createdAt: immediate.createdAt + 1,
+    });
+    const immediateChecks = evaluateP0EvidenceRecord(
+      record(),
+      context(immediate, { allGenerations: [immediate, correlatedDuplicate] }),
+    );
+    expect(immediateChecks.find((item) => item.id === 'no-duplicate-provider-job')?.passed)
+      .toBe(false);
   });
 
   test('requires a processing checkpoint, new runtime, and manual restart confirmation', () => {

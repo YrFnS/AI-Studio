@@ -142,9 +142,27 @@ function duplicateProviderJobCount(
   target: GenerationRecord | undefined,
   allGenerations: readonly GenerationRecord[],
 ): number {
-  if (!target?.providerJobId) return target ? 1 : 0;
+  if (!target) return 0;
+  if (target.providerJobId) {
+    return allGenerations.filter((generation) => (
+      generation.providerJobId === target.providerJobId
+    )).length;
+  }
+
+  // Immediate providers may not return a provider job id. Correlate records
+  // created by the same isolated request so batch or duplicate persistence is
+  // still visible to the evidence gate.
   return allGenerations.filter((generation) => (
-    generation.providerJobId === target.providerJobId
+    generation.id === target.id
+    || (
+      generation.providerJobId === undefined
+      && generation.providerId === target.providerId
+      && generation.modelId === target.modelId
+      && generation.type === target.type
+      && generation.prompt === target.prompt
+      && generation.parentGenerationId === target.parentGenerationId
+      && Math.abs(generation.createdAt - target.createdAt) <= 5_000
+    )
   )).length;
 }
 
