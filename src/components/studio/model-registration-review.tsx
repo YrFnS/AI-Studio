@@ -147,6 +147,28 @@ export function ModelRegistrationReview() {
         });
       }
 
+      // Keep saved reviews manageable even after a discovered-model cache
+      // entry expires. Static catalog entries remain excluded.
+      for (const registration of savedRegistrations) {
+        if (getRegisteredModel(registration.providerName, registration.modelId)) {
+          continue;
+        }
+        const key = candidateKey(registration.providerName, registration.modelId);
+        if (candidateMap.has(key)) continue;
+        candidateMap.set(key, {
+          key,
+          source: registration.source,
+          sourceId: registration.sourceId,
+          providerId: registration.providerId,
+          providerName: registration.providerName,
+          providerDisplayName: registration.providerDisplayName,
+          modelId: registration.modelId,
+          modelName: registration.modelName,
+          type: registration.type,
+          description: 'Persisted review record; the original discovery cache entry is no longer present.',
+        });
+      }
+
       const nextCandidates = [...candidateMap.values()].sort((a, b) => (
         a.providerDisplayName.localeCompare(b.providerDisplayName)
         || a.modelName.localeCompare(b.modelName)

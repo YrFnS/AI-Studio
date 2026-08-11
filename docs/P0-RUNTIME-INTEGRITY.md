@@ -48,6 +48,13 @@ P0 is complete only when each request has one durable lifecycle, every exposed p
 - Generation routes enforce the matching contract before provider contact.
 - Image, Video, and Cinema selectors react to the active operation and reset incompatible selections.
 - Arbitrary custom or discovered models cannot bypass registry review.
+- IndexedDB version 7 stores draft, approved, revoked, and rejected local model-registration records.
+- Settings → Review keeps custom and discovered definitions inert until they are mapped to a source-defined bounded adapter profile.
+- Approval requires an HTTPS documentation URL, meaningful review notes, and explicit acknowledgement; it records `contract-reviewed`, never automatic live verification.
+- The explicit generation client exposes only approved registrations and attaches the matching evidence to the exact provider/model/operation request.
+- Generation routes revalidate the registration, adapter profile, model-ID rule, operation, and route before provider contact.
+- Static catalog entries cannot be shadowed or broadened by local approval, and providers without a bounded profile remain metadata-only.
+- Approved records remain manageable after discovery-cache expiry and can be revoked from selector access.
 - No contract is labeled `live-verified` without an owner-key smoke test.
 
 ### Adapter correctness
@@ -125,7 +132,7 @@ P0 is complete only when each request has one durable lifecycle, every exposed p
 ### Product correctness
 
 - Replaced the placeholder Settings transfer APIs with a browser-native, versioned local backup format.
-- Backups include generations, prompts, collections, collection membership, reference images, custom/discovered model definitions, and downloaded IndexedDB media assets.
+- Backups include generations, prompts, collections, collection membership, reference images, custom/discovered model definitions, reviewed model registrations, and downloaded IndexedDB media assets.
 - API keys are explicitly excluded from local data backups and remain in the separate plain-text key transfer flow.
 - Restore supports replace and merge modes; both preserve stored API keys.
 - Corrected Settings privacy copy to explain that keys are stored in IndexedDB, sent in same-origin POST bodies to this AI Studio instance when required, and not persisted in a server-side database or configuration file.
@@ -145,7 +152,7 @@ Automated coverage includes:
 - local-only behavior for unsupported providers,
 - visible missing-key recovery controls and key-triggered rescans,
 - polling retry/deadline behavior,
-- registry and route ownership,
+- registry, route, reviewed-registration profile, selector decoration, and server revalidation ownership,
 - Replicate official-model/version routing,
 - strict request parsing and byte limits,
 - provider error and timeout normalization,
@@ -157,12 +164,11 @@ Automated coverage includes:
 
 ## Remaining P0 work
 
-### Live contract verification and extension workflow
+### Live contract verification
 
-- Run owner-supplied-key smoke tests for every registered provider/model/operation.
+- Run owner-supplied-key smoke tests for every registered provider/model/operation, including locally approved contracts selected for real use.
 - Promote only evidenced contracts to `live-verified`.
-- Hide or repair contracts that fail live verification.
-- Define the reviewed workflow by which custom and discovered models can become executable without bypassing the registry.
+- Hide, revoke, or repair contracts that fail live verification.
 - Run real provider-side cancellation checks for Replicate, fal, Runway, and Luma; automated tests currently verify the documented HTTP contracts without spending provider credits.
 
 ### Required live evidence

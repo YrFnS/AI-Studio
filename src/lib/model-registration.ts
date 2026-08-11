@@ -98,18 +98,6 @@ const REPLICATE_MODEL = /^(?:[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+(?::[a-f0-9]{32,})?
 
 export const MODEL_ADAPTER_PROFILES: readonly ModelAdapterProfile[] = [
   {
-    id: 'openai.images-generations.text-to-image',
-    providerName: 'openai',
-    type: 'image',
-    operation: 'text-to-image',
-    route: 'image',
-    adapterId: 'openai.text-to-image',
-    displayName: 'OpenAI Images · Text to Image',
-    description: 'Uses the OpenAI Images generations request shape.',
-    modelIdPattern: '^(?:gpt-image|dall-e)-[A-Za-z0-9._-]+$',
-    modelIdHint: 'Use an OpenAI image model id beginning with gpt-image- or dall-e-.',
-  },
-  {
     id: 'replicate.prediction.text-to-image',
     providerName: 'replicate',
     type: 'image',

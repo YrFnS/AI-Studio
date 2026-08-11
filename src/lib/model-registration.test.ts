@@ -53,6 +53,7 @@ describe('reviewed model registration', () => {
       'image-to-image',
     ]);
     expect(getModelAdapterProfiles({ providerName: 'runway' })).toEqual([]);
+    expect(getModelAdapterProfiles({ providerName: 'openai' })).toEqual([]);
   });
 
   test('creates inert drafts before approval', () => {

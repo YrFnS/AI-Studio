@@ -10,6 +10,7 @@ AI Studio is a local-first, multi-provider workspace for AI image and video gene
 - **Explicit generation client** — every browser module that submits or polls generation work imports the shared client directly; AI Studio does not replace `window.fetch` globally.
 - **Typed generation lifecycle** — primary studios, model comparison, editing, and derived actions share one submit, poll, persist, queue, cancellation, and recovery contract.
 - **Authoritative operation registry** — every executable provider/model/operation combination declares its owning route, adapter, and verification level. Raw catalog capability labels cannot make a model executable.
+- **Reviewed model registration** — custom and discovered definitions remain inert until mapped to a bounded adapter profile, documented, acknowledged, and locally approved; routes revalidate the approval on every request.
 - **Strict route schemas** — generation routes reject malformed, oversized, unknown, or out-of-range input before provider contact.
 - **Bounded provider transport** — provider submissions and status checks have deadlines, bounded error reads, and normalized public errors.
 - **Safe image ingestion** — reference images have one 10 MB binary limit, strict image types, HTTPS-only remote fetching, redirect limits, and private-network blocking.
@@ -28,7 +29,7 @@ AI Studio is a local-first, multi-provider workspace for AI image and video gene
 - **Local backup and restore** — versioned non-key backups with replace or merge restore modes and downloaded media assets
 - **Prompt tools** — history, templates, suggestions, quick starters, and a structured prompt builder
 - **Model comparison** — run supported image models side by side
-- **Custom and discovered model definitions** — save local definitions for review; they are not executable until an operation contract is registered
+- **Custom and discovered model review** — save inert candidates, review provider documentation, approve bounded adapter contracts, and revoke selector access at any time
 - **Generation queue** — monitor asynchronous work without blocking the studio
 - **Keyboard shortcuts** — fast navigation and generation controls
 
@@ -85,7 +86,7 @@ bun run check
 - Prompt history and saved prompts
 - Collections and collection membership
 - Reference images and thumbnails
-- Custom model definitions and cached model discovery results
+- Custom model definitions, cached model discovery results, and locally reviewed execution contracts
 
 Clearing this site's browser storage removes this locally persisted data, including downloaded protected outputs.
 
@@ -103,6 +104,20 @@ Every browser generation caller imports `generationFetch` from `src/lib/generati
 
 No contract is promoted to `live-verified` without manual evidence.
 
+## Reviewed custom and discovered models
+
+Settings → Review turns custom or provider-discovered metadata into an executable local contract only through an explicit review:
+
+1. The model remains a non-executable candidate by default.
+2. The user selects a source-defined adapter profile with fixed provider, operation, route, request shape, and model-ID rule.
+3. Approval requires an HTTPS provider-documentation URL, meaningful contract notes, and an explicit acknowledgement.
+4. Approved registrations are stored in IndexedDB and included in normal non-key backups.
+5. The explicit generation client adds the approved registration only to the matching provider/model/operation request.
+6. The server validates the full registration, profile, model ID, operation, and route before contacting the provider.
+7. Static catalog entries cannot be shadowed or broadened by local approval, and revoked or draft registrations never appear in generation selectors.
+
+A local approval is recorded as `contract-reviewed`; it is not `live-verified`. Providers without a bounded source-defined profile remain metadata-only until a developer implements and tests one.
+
 For editing and derived actions, `src/lib/generation-operation.ts` consumes these registry contracts and builds the dedicated edit, upscale, variation, or image-to-video request. The request body remains credential-free until the explicit client injects the matching locally stored provider key.
 
 When a user starts a generation, the local route first parses the body through the operation-specific Zod schema in `src/lib/server/generation-request.ts`. The parser enforces content type, total body size, required fields, strict unknown-field rejection, and parameter bounds. The route then calls `requireModelOperation` before contacting the selected provider.
@@ -115,7 +130,7 @@ The shared polling coordinator applies bounded retry, backoff, deadline, cancell
 
 ## Local backup and restore
 
-Settings → Transfer exports a versioned JSON backup directly in the browser. It includes non-key IndexedDB metadata, prompts, collections, reference images, custom and discovered model definitions, and downloaded media Blobs encoded for transfer. API keys are deliberately excluded and remain in their separate, explicitly warned plain-text key export flow.
+Settings → Transfer exports a versioned JSON backup directly in the browser. It includes non-key IndexedDB metadata, prompts, collections, reference images, custom and discovered model definitions, reviewed model registrations, and downloaded media Blobs encoded for transfer. API keys are deliberately excluded and remain in their separate, explicitly warned plain-text key export flow.
 
 Restore supports two modes:
 
@@ -186,7 +201,7 @@ The currently registered video model families include:
 
 Image, editing, variation, and upscale support is defined per model in `src/lib/generation-registry.ts`, not by provider-wide capability flags. The live-verification state for each contract remains part of the P0 completion gate.
 
-Custom or dynamically discovered models are never merged directly into Image, Video, or Cinema generation selectors. A reviewed registry entry and executable adapter are required first.
+Custom or dynamically discovered models are never merged directly into Image, Video, or Cinema generation selectors. Settings → Review can approve only source-defined bounded adapter profiles; every request carries the matching approval for server revalidation. Models without a safe profile remain metadata-only.
 
 ## Project structure
 
@@ -205,7 +220,7 @@ src/
 │   └── page.tsx
 ├── components/
 │   ├── pending-generation-recovery.tsx
-│   ├── studio/                   # Studios, editors, lifecycle hooks, gallery, and settings
+│   ├── studio/                   # Studios, editors, lifecycle hooks, gallery, settings, and model review
 │   └── ui/                       # Shared shadcn/Radix components
 ├── hooks/
 └── lib/
@@ -215,6 +230,8 @@ src/
     ├── generation-operation.ts   # Derived-action planning from registry contracts
     ├── generation-poller.ts      # Shared resilient polling policy
     ├── generation-registry.ts    # Provider/model/operation/route/adapter source of truth
+    ├── model-registration.ts       # Bounded review profiles and server approval validation
+    ├── model-registration-client.ts # IndexedDB approval lookup and selector decoration
     ├── protected-media.ts        # Credential-free protected-media descriptors and limits
     ├── protected-media-client.ts # POST-only authenticated media retrieval
     ├── reference-image-limits.ts # Shared browser and server image limits

@@ -183,9 +183,9 @@ export function createGenerationClient(
 
     if (pathname === '/api/providers' && method === 'GET') {
       const response = await fetchImpl(input, init);
-      if (!response.ok) return response;
+      if (!response.ok || typeof indexedDB === 'undefined') return response;
       try {
-        const catalog = await response.json() as unknown;
+        const catalog = await response.clone().json() as unknown;
         const decorated = await decorateProviderCatalogWithApprovedRegistrations(catalog);
         const responseHeaders = new Headers(response.headers);
         responseHeaders.set('Content-Type', 'application/json');
@@ -198,7 +198,10 @@ export function createGenerationClient(
           headers: responseHeaders,
         });
       } catch {
-        return failedResponse('Provider catalog could not be decorated with reviewed models');
+        // Reviewed models are additive. If local review metadata is unavailable,
+        // retain the already registry-filtered static catalog rather than
+        // breaking every provider selector.
+        return response;
       }
     }
 
