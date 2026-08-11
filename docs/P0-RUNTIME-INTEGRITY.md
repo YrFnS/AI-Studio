@@ -6,227 +6,168 @@ Base: `main`
 
 ## Objective
 
-Make generation submission, polling, persistence, recovery, cancellation, provider routing, request handling, and protected-output storage deterministic before adding more providers or visual features.
+Make generation submission, provider routing, polling, persistence, cancellation, recovery, protected-output storage, and request handling deterministic before adding more providers or visual features.
 
-P0 is complete only when:
-
-- each request produces one durable lifecycle,
-- every exposed provider/model/operation has an executable contract,
-- provider credentials are handled honestly,
-- malformed and oversized requests fail before provider contact,
-- supported asynchronous work survives local process restarts,
-- authenticated outputs survive local server restarts,
-- and every contract presented as verified has real evidence.
+P0 is complete only when each request has one durable lifecycle, every exposed provider/model/operation has an executable and evidenced contract, credentials are handled honestly, and supported asynchronous work survives page and local-server restarts.
 
 ## Completed implementation
 
-### Single persistence owner
+### One persistence and transport path
 
-- Removed `GenerationRuntimeBridge`, which could write duplicate generation records and leave orphaned `processing` entries.
-- Removed `SecureProviderFetchBridge`; AI Studio no longer replaces `window.fetch` globally.
-- Kept one explicit browser persistence contract through `beginGeneration`, `markGenerationProcessing`, `completeGeneration`, and `failGeneration`.
+- Removed the duplicate `GenerationRuntimeBridge` persistence path.
+- Removed global `window.fetch` replacement.
+- Added `src/lib/generation-client.ts` as the explicit browser transport for generation, polling, protected-media, and cancellation requests.
+- Provider keys are read from IndexedDB and added only to same-origin POST bodies when required.
+- Added source coverage that rejects browser generation callers which bypass the explicit client.
 
-### Explicit generation transport
-
-- Added `src/lib/generation-client.ts` for browser generation submission and status requests.
-- Generation callers import `generationFetch` explicitly; unrelated requests continue through native fetch.
-- The client reads missing provider keys from IndexedDB and injects them only into local generation requests.
-- Legacy GET-style status calls are converted to credential-safe POST requests.
-- Source coverage fails when a new browser caller uses `/api/generate/*` without the explicit client.
-
-### Typed generation lifecycle
+### One typed generation lifecycle
 
 - Added `src/lib/generation-lifecycle.ts` as the owner of:
 
-  `begin → submit → mark processing → poll → finalize media → complete/fail`
+  `begin → submit → mark processing → poll → finalize media → complete/fail/cancel`
 
-- Lifecycle handles expose a result promise, immutable snapshots, subscriptions, provider-job metadata, and idempotent cancellation.
-- Immediate and asynchronous responses use the same terminal persistence path.
-- Optional queue ports connect lifecycle state to Zustand without coupling lifecycle infrastructure to the store.
-- Page aborts detach ownership without falsely failing provider work, allowing IndexedDB recovery.
-- Missing keys during recovery can remain non-terminal and recoverable.
-- Transport, polling, persistence, key lookup, protected-media retrieval, queue behavior, time, and cancellation are injectable for deterministic tests.
-- Edit responses using an `images` array are normalized into the same result contract as `urls` and `resultUrl` responses.
-- Protected outputs are downloaded and persisted before a lifecycle reaches `completed`.
+- Immediate and asynchronous results share one terminal persistence path.
+- Queue state is connected through a small port rather than coupled directly to Zustand.
+- Lifecycle handles provide immutable snapshots, result promises, provider-job metadata, durable Gallery IDs, page detachment, interrupted-job recovery, and idempotent cancellation.
+- Protected output download and local persistence finish before a lifecycle reaches `completed`.
 
 ### Generation surfaces migrated
 
-- **Model Compare**: each slot has an isolated lifecycle handle and durable Gallery record.
-- **Image Studio**: removed component-owned provider jobs, polling, queue handling, and duplicate persistence branches.
-- **Video Studio**: immediate and asynchronous video work now share one lifecycle and Gallery ID.
-- **Cinema Studio**: moved to the shared lifecycle and removed duplicated scene-preset prompt text.
-- **Image Editor and Editor Controls**: share `use-editor-generation.ts`; neither polls locally nor places provider keys in URLs.
-- **Derived actions**: upscale, variation, improve, edit, inpaint, and image-to-video use typed lifecycle handles, dedicated routes, durable parent relationships, and visible local cancellation.
-- Navigating away detaches local ownership so startup recovery can resume supported work.
+- Model Compare gives every slot its own lifecycle handle and durable record.
+- Image Studio, Video Studio, and Cinema Studio no longer own raw provider jobs, polling intervals, manual queue updates, or duplicate persistence branches.
+- Image Editor and Editor Controls share `use-editor-generation.ts`.
+- Upscale, variation, improve, edit, inpaint, and image-to-video use typed lifecycle handles, dedicated routes, durable parent relationships, and visible cancellation.
+- Cinema scene-preset text is appended once.
 
-### Authoritative provider, model, and operation registry
+### Authoritative provider/model/operation registry
 
 - Added `src/lib/generation-registry.ts` as the executable source of truth.
-- Every exposed model operation declares:
-  - the exact operation,
-  - its owning route,
-  - its adapter identifier,
-  - and one verification level: `adapter-implemented`, `contract-reviewed`, or `live-verified`.
-- The registry distinguishes text-to-image, image-to-image, edit, inpaint, variation, upscale, text-to-video, and image-to-video.
-- `/api/providers` decorates and filters the raw catalog through the registry. Catalog capability strings cannot expose an operation by themselves.
-- Providers without registered executable models disappear from generation selectors.
-- Image, Video, and Cinema selectors filter by the active operation and reset stale incompatible selections.
-- Image, Video, and Cinema no longer merge arbitrary IndexedDB custom models into executable selectors.
-- Generation routes call `requireModelOperation` before provider contact.
-- `generation-operation.ts` consumes registry contracts rather than trusting legacy capability strings.
-- No operation is marked `live-verified` without an owner-supplied-key smoke test.
+- Registered operations distinguish text-to-image, image-to-image, edit, inpaint, variation, upscale, text-to-video, and image-to-video.
+- Every contract owns an operation, route, adapter ID, and evidence level: `adapter-implemented`, `contract-reviewed`, or `live-verified`.
+- `/api/providers` filters the raw catalog through the registry; capability labels cannot expose an operation by themselves.
+- Generation routes enforce the matching contract before provider contact.
+- Image, Video, and Cinema selectors react to the active operation and reset incompatible selections.
+- Arbitrary custom or discovered models cannot bypass registry review.
+- No contract is labeled `live-verified` without an owner-key smoke test.
 
 ### Adapter correctness
 
-- Removed false generic OpenAI, Replicate, and fal upscale or variation adapters.
-- Stability upscale uses the registered synchronous conservative-upscale adapter.
-- Stability SD3 image-to-image sends explicit image mode, model mapping, source image, and transformation strength.
-- Replicate official `owner/name` models use the official-model endpoint, while immutable version references use the version endpoint.
-- Runway, Luma, and fal image-to-video keep dedicated operation contracts and exact model routing.
-- Provider-key checks no longer declare arbitrary sufficiently long keys valid.
-- Google key validation uses headers rather than URL parameters.
+- Removed false generic OpenAI, Replicate, and fal upscale/variation adapters.
+- Stability upscale uses its registered conservative-upscale contract.
+- Stability SD3 image-to-image sends explicit mode, mapped model, source image, and transformation strength.
+- Replicate official models use the official-model prediction endpoint; immutable references use the version endpoint.
+- Runway, Luma, and fal image-to-video use dedicated operation contracts and exact model routing.
+- Provider-key tests no longer report arbitrary long strings as valid.
 
-### Stateless asynchronous jobs and resilient recovery
+### Strict request and network safety
 
-- Asynchronous routes return credential-free `aistudio-job.*` tokens containing provider job metadata but never API keys.
-- `/api/generate/status` receives the locally stored provider key in a POST body.
-- Added `src/lib/generation-poller.ts` with exponential backoff, bounded jitter, deadlines, retry limits, cancellation, and normalized terminal failures.
-- Exhausted retries and permanent provider responses terminate instead of polling forever.
-- `PendingGenerationRecovery` scans IndexedDB and resumes older `processing` records through the same lifecycle pipeline.
-- Jobs waiting on a missing provider key remain recoverable.
-- Older process-memory generation jobs remain temporarily compatible during migration.
+- Added strict Zod contracts for image, video, edit, upscale, variation, image-to-video, status, protected-media, and cancellation requests.
+- Unknown, malformed, oversized, empty, or out-of-range input fails before provider contact.
+- Request bodies are streamed with route-specific limits before JSON parsing.
+- Added bounded provider transport with submission, status, cancellation, and media-transfer deadlines.
+- Provider error bodies are read only to a bounded diagnostic limit.
+- Authentication, quota, rejection, unavailable, timeout, network, and invalid-response failures are normalized without exposing raw upstream bodies to the browser.
+- Browser and server image input share one 10 MB PNG/JPEG/WebP/GIF policy.
+- Remote image input requires HTTPS, rejects URL credentials, blocks private and reserved networks, caps redirects, and streams with deadline and byte limits.
+
+### Production browser hardening
+
+- Added Content Security Policy, HSTS, `nosniff`, frame denial, strict referrer policy, restrictive permissions policy, Cross-Origin Opener Policy, and disabled DNS prefetching.
+- Production excludes `unsafe-eval`; development permits it only for the Next.js development runtime.
+- Disabled `X-Powered-By`.
+
+### Stateless asynchronous jobs and recovery
+
+- Migrated asynchronous routes return credential-free `aistudio-job.*` tokens.
+- Tokens contain provider job metadata but never API keys.
+- Status polling uses POST and reloads the provider key from IndexedDB.
+- Shared polling provides exponential backoff, bounded jitter, deadlines, retry limits, cancellation, and normalized terminal failures.
+- Startup recovery scans older IndexedDB `processing` records and resumes them through the same lifecycle.
+- Older process-memory generation jobs remain temporarily compatible while legacy records age out.
 
 ### Stateless protected media and durable local assets
 
-- Removed `src/lib/server-media-store.ts` and the random-token `/api/generate/media/[token]` route.
-- Google/Veo status completion now returns a credential-free protected-media descriptor containing only:
-  - descriptor version,
-  - provider ID,
-  - provider job ID,
-  - and media kind.
-- The descriptor contains no API key, provider media URL, or temporary server token.
-- Added `src/lib/protected-media.ts` as the shared descriptor and 512 MB local-asset limit contract.
-- Added `src/lib/protected-media-client.ts` for POST-only retrieval. The browser reloads the provider key from IndexedDB and places it in the request body, never in the URL.
-- Added the dynamic POST `/api/generate/media` route. It:
-  - rechecks the completed Google operation from the provider job ID,
-  - accepts only trusted Google media hosts,
-  - rejects credential-bearing or non-HTTPS provider media URLs,
-  - uses bounded provider transport,
-  - enforces a five-minute media-transfer deadline,
-  - validates media content type,
-  - streams at most 512 MB,
-  - and returns private no-store same-origin media.
-- Upgraded IndexedDB to version 6 with a `mediaAssets` object store.
-- Protected image or video Blobs are stored separately from generation metadata.
-- Generation records retain only `mediaAssetId`, MIME type, and byte size.
-- Gallery reads recreate session-scoped `blob:` URLs from IndexedDB after reload or local server restart.
-- Generation deletion and “clear all” remove the matching media assets and revoke cached object URLs.
-- A lifecycle does not report completion until the protected file is downloaded and its local asset record is stored.
+- Removed process-memory protected-media tokens and the tokenized media route.
+- Google/Veo completion returns a credential-free descriptor containing provider ID, provider job ID, media kind, and descriptor version.
+- Added POST-only `/api/generate/media`; keys stay in the request body and provider media URLs never reach the browser.
+- The route rechecks the provider operation, accepts only trusted Google media hosts, validates type, and streams with a five-minute deadline and 512 MB ceiling.
+- IndexedDB version 6 adds a separate `mediaAssets` Blob store.
+- Generation metadata stores only local asset ID, MIME type, and byte size.
+- Gallery reads recreate session-scoped `blob:` URLs after reload or local-server restart.
+- Deletion and clear-all remove matching media assets and revoke cached object URLs.
 
-### Generation route and network safety
+### Provider-side cancellation
 
-- Added `src/lib/server/generation-request.ts` with strict Zod schemas for image, video, edit, upscale, variation, image-to-video, status, and protected-media requests.
-- Unknown fields are rejected rather than forwarded to provider adapters.
-- Prompt, provider, model, key, duration, aspect ratio, batch, seed, dimensions, inference settings, operation parameters, and protected provider job identifiers are bounded.
-- Request bodies are read with streamed byte limits before JSON parsing:
-  - image generation: 30 MB,
-  - video generation: 45 MB,
-  - edit: 30 MB,
-  - single-image derived operations: 15 MB,
-  - status and protected-media requests: 128 KB.
-- Invalid content types, malformed JSON, empty requests, oversized requests, and invalid parameters receive structured no-store errors.
-- Added `src/lib/server/provider-request.ts` as the bounded provider transport:
-  - submission deadline: 120 seconds,
-  - status deadline: 20 seconds,
-  - protected-media transfer deadline: five minutes,
-  - provider error-body read limit: 8 KB,
-  - normalized authentication, quota, rejection, unavailable, timeout, network, and invalid-response failures,
-  - response-stream ownership so transfer deadlines remain active until streamed bodies finish or cancel.
-- Raw provider response text is retained only for bounded server-side diagnostics and is never echoed to the browser.
-- Added `src/lib/server/generation-response.ts` as the shared public error owner for request, registry, image-input, provider, and internal failures.
-- All generation submission, polling, and protected-media routes use the shared parser, response layer, and bounded provider transport.
-- Edit source images and masks use the same SSRF- and size-safe image loader as other image operations.
+- Added strict POST-only `/api/generate/cancel` handling.
+- Stateless job tokens are decoded server-side; provider API keys remain in the POST body.
+- Added remote cancellation adapters for:
+  - Replicate prediction cancellation,
+  - fal queue-request cancellation,
+  - Runway task deletion/cancellation,
+  - and Luma generation deletion as the provider stop request.
+- Already terminal or missing provider jobs are treated idempotently.
+- Unsupported providers use an honest local-only outcome rather than claiming provider execution stopped.
+- Remote cancellation is attempted once per lifecycle; the local poller aborts immediately, then the final remote outcome is persisted.
+- Queue entries show whether remote cancellation was requested, already terminal, unsupported, local-only, or failed.
+- Successful cancellation responses are consumed so bounded provider deadline timers release immediately.
 
-### Reference-image safety
+### Visible missing-key recovery
 
-- Added `src/lib/reference-image-limits.ts` with one 10 MB binary limit and a PNG, JPEG, WebP, and GIF allowlist.
-- Image Studio, Video Studio, outfit-reference uploads, and the reusable image uploader validate files before `FileReader` and base64 conversion.
-- `/api/upload` checks declared request size, file type, file size, and decoded byte size before returning a data URL.
-- Remote image loading:
-  - accepts HTTPS only,
-  - rejects URL credentials,
-  - resolves DNS and blocks private or reserved addresses,
-  - caps redirects,
-  - enforces a 15-second fetch deadline,
-  - streams with a 10 MB response limit,
-  - and rejects non-image content.
-
-### Production security headers and CSP
-
-- Added `src/lib/security-headers.ts` and wired it through `next.config.ts` for every path.
-- Production headers include Content Security Policy, HTTP Strict Transport Security, `nosniff`, frame denial, strict referrer policy, restrictive permissions policy, Cross-Origin Opener Policy, and disabled DNS prefetching.
-- The CSP blocks objects and framing, restricts base URIs and form submissions, and allows only the image, media, worker, and connection sources required by a local multi-provider studio.
-- Production excludes `unsafe-eval`; development permits it for the Next.js development runtime.
-- The framework-identifying `X-Powered-By` header is disabled.
+- Interrupted jobs without a provider key now produce a persistent recovery panel instead of only an IndexedDB error string.
+- The panel lists blocked jobs and can:
+  - open Provider Settings,
+  - retry recovery,
+  - automatically rescan after a key is saved or removed,
+  - and stop tracking a selected job with honest remote-versus-local messaging.
+- Reconnecting a key triggers a new recovery scan through the store provider version.
+- Missing-key jobs remain `processing` until resumed or explicitly stopped.
 
 ### Regression coverage
 
-Automated coverage now includes:
+Automated coverage includes:
 
-- stateless token round trips and credential exclusion,
-- malformed and oversized token rejection,
-- POST-only status and protected-media credentials,
-- polling recovery, backoff, retry exhaustion, cancellation, and deadlines,
-- explicit-client key injection and pass-through behavior,
-- lifecycle immediate completion, asynchronous polling, queue ownership, failure, cancellation, missing-key recovery, and protected-media finalization,
-- credential-free protected-media descriptors,
-- removal of process-memory media-token ownership,
-- IndexedDB Blob persistence and Gallery URL materialization,
-- protected-media route shape, host restrictions, content limits, and POST-only ownership,
-- per-model operation and route ownership,
-- registry filtering and custom-model bypass prevention,
-- official Replicate model routing versus immutable version routing,
-- strict request parsing and unknown-field rejection,
-- malformed JSON and request-size enforcement,
-- insecure image-input rejection,
-- pre-`FileReader` reference-image limits,
-- provider authentication, quota, timeout, network, malformed-response, and streamed-body normalization,
-- shared provider-transport coverage across generation callers,
-- edit-route image-loader ownership,
-- production and development CSP differences,
-- security-header wiring,
+- lifecycle, persistence, queue, recovery, cancellation, and explicit-client ownership,
+- stateless job and protected-media descriptor credential exclusion,
+- POST-only status, media, and cancellation credentials,
+- cancellation adapter endpoint and method ownership,
+- exactly-once cancellation race handling,
+- local-only behavior for unsupported providers,
+- visible missing-key recovery controls and key-triggered rescans,
+- polling retry/deadline behavior,
+- registry and route ownership,
+- Replicate official-model/version routing,
+- strict request parsing and byte limits,
+- provider error and timeout normalization,
+- insecure image-input rejection and pre-`FileReader` limits,
+- CSP and security-header wiring,
+- protected-media finalization and IndexedDB Blob persistence,
+- binary media pass-through without response cloning,
 - and removal of temporary write-capable migration automation.
-
-The permanent branch passes the repository validation pipeline:
-
-- `bun install --frozen-lockfile`
-- `bun run typecheck`
-- `bun run test`
-- `bun run lint`
-- `bun run build:app`
-
-External Vercel checks are tracked separately because account build-rate limits can prevent a deployment check even when the standalone production build succeeds.
 
 ## Remaining P0 work
 
-### Registry verification and extension workflow
+### Live contract verification and extension workflow
 
-- Run owner-supplied-key smoke tests for every model/operation marked `adapter-implemented` or `contract-reviewed`.
+- Run owner-supplied-key smoke tests for every registered provider/model/operation.
 - Promote only evidenced contracts to `live-verified`.
-- Hide or repair any contract that fails live verification.
-- Define the reviewed registration workflow that permits custom and discovered models to become executable without bypassing the registry.
-
-### Cancellation and recovery experience
-
-- Add provider-side cancellation adapters where provider APIs support cancellation. Current controls stop the local lifecycle and persist a terminal cancellation, but may not stop provider execution or billing.
-- Add a visible recovery state for jobs waiting on a missing provider key.
+- Hide or repair contracts that fail live verification.
+- Define the reviewed workflow by which custom and discovered models can become executable without bypassing the registry.
+- Run real provider-side cancellation checks for Replicate, fal, Runway, and Luma; automated tests currently verify the documented HTTP contracts without spending provider credits.
 
 ### Product correctness
 
 - Repair Settings export/import so it serializes and restores IndexedDB metadata and generated media assets.
 - Correct the API-key privacy copy in Settings.
-- Fix queue `clearCompleted` so it preserves pending work.
+- Fix queue `clearCompleted` so pending work is preserved.
 - Make Gallery search cover all IndexedDB records rather than only the loaded page.
+
+### Required live evidence
+
+- One immediate image request creates exactly one completed Gallery record.
+- One asynchronous image job survives a local-server restart while polling.
+- One asynchronous video job survives a local-server restart while polling.
+- One authenticated protected-media video survives a local-server restart and reopens from IndexedDB.
+- Supported cancellation adapters stop real provider jobs where provider state permits cancellation.
 
 ## Completion gates
 
@@ -236,10 +177,7 @@ P0 must not be marked complete until all of the following are evidenced:
 - `bun run test`
 - `bun run lint`
 - `bun run build:app`
-- One immediate image request produces exactly one completed Gallery record.
-- One asynchronous image job survives a local server restart while polling.
-- One asynchronous video job survives a local server restart while polling.
-- One authenticated protected-media video survives a local server restart and reopens from IndexedDB.
-- Failed and cancelled jobs reach terminal states without infinite polling.
-- Settings never reports an untested key as valid.
-- Manual smoke tests pass with owner-supplied keys for every provider/model/operation presented as `live-verified`.
+- required live image, video, protected-media, and cancellation checks,
+- failed and cancelled jobs reaching terminal states without infinite polling,
+- Settings never reporting an untested key as valid,
+- and every contract presented as `live-verified` having owner-key evidence.
