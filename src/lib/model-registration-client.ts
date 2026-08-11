@@ -97,10 +97,13 @@ export async function findApprovedModelRegistration(options: {
   modelId: string;
   operation: GenerationOperationId;
   route: GenerationRouteId;
+  registrations?: readonly ModelRegistrationRecord[];
 }): Promise<ApprovedModelRegistration | null> {
-  const registrations = await getApprovedModelRegistrations();
+  const registrations = options.registrations
+    || await getApprovedModelRegistrations();
   return registrations.find((registration) => (
-    (registration.providerId === options.providerId
+    registration.status === 'approved'
+    && (registration.providerId === options.providerId
       || registration.providerName === options.providerId)
     && registration.modelId === options.modelId
     && registration.operation === options.operation
@@ -139,6 +142,7 @@ function createProviderFromStatic(
 
 export async function decorateProviderCatalogWithApprovedRegistrations(
   value: unknown,
+  suppliedRegistrations?: readonly ModelRegistrationRecord[],
 ): Promise<ProviderCatalogEntry[]> {
   if (!Array.isArray(value)) return [];
 
@@ -151,7 +155,8 @@ export async function decorateProviderCatalogWithApprovedRegistrations(
         : [],
     })) as ProviderCatalogEntry[];
 
-  const registrations = await getApprovedModelRegistrations();
+  const registrations = suppliedRegistrations
+    || await getApprovedModelRegistrations();
   const grouped = groupRegistrations(registrations);
 
   for (const modelRegistrations of grouped.values()) {
