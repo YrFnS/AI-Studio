@@ -1,0 +1,75 @@
+name: Apply product correctness slice
+
+on:
+  push:
+    branches:
+      - agent/p0-runtime-integrity
+
+permissions:
+  contents: write
+
+concurrency:
+  group: product-correctness-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Check out runtime-integrity branch
+        uses: actions/checkout@v4
+        with:
+          ref: agent/p0-runtime-integrity
+          fetch-depth: 0
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.4
+
+      - name: Apply product-correctness bundle
+        run: bash scripts/run-product-correctness-bundle.sh "$GITHUB_WORKSPACE"
+
+      - name: Remove one-time migration tooling
+        run: |
+          git rm -f \
+            .github/workflows/apply-product-correctness.yml \
+            scripts/apply-product-correctness-bundle.sh \
+            scripts/run-product-correctness-bundle.sh \
+            scripts/product-correctness-bundle/part-00.b64 \
+            scripts/product-correctness-bundle/part-01.b64 \
+            scripts/product-correctness-bundle/part-02.b64 \
+            scripts/product-correctness-bundle/part-03.b64 \
+            scripts/product-correctness-bundle/part-04.b64 \
+            scripts/product-correctness-bundle/part-05.b64 \
+            scripts/product-correctness-bundle/part-06.b64
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Test
+        run: bun run test
+
+      - name: Lint
+        run: bun run lint
+
+      - name: Build standalone app
+        run: bun run build:app
+
+      - name: Commit validated product-correctness changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No product-correctness changes were produced" >&2
+            exit 1
+          fi
+          git commit -m "complete local backup and gallery correctness"
+          git push origin HEAD:agent/p0-runtime-integrity
