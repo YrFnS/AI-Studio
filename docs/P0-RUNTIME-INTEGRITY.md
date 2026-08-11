@@ -164,7 +164,7 @@ Automated coverage includes:
 
 ### Automated validation
 
-The permanent read-only CI workflow passed on the committed reviewed-registration state in run **#484**:
+The permanent read-only CI workflow passed on the final reviewed-registration state in run **#486**:
 
 - `bun install --frozen-lockfile`
 - `bun run typecheck`
