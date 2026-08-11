@@ -53,7 +53,7 @@ describe('generation lifecycle remote cancellation', () => {
 
     const client = createGenerationLifecycleClient({
       fetchImpl: async () => processingResponse(),
-      pollImpl: async (_request, options) => abortingPoll(options.signal),
+      pollImpl: async (_request, options) => abortingPoll(options?.signal),
       beginImpl: async () => {},
       markProcessingImpl: async () => { markedResolve?.(); },
       completeImpl: async () => [],
@@ -111,7 +111,7 @@ describe('generation lifecycle remote cancellation', () => {
 
     const client = createGenerationLifecycleClient({
       fetchImpl: async () => processingResponse(),
-      pollImpl: async (_request, options) => abortingPoll(options.signal),
+      pollImpl: async (_request, options) => abortingPoll(options?.signal),
       beginImpl: async () => {},
       markProcessingImpl: async () => { markedResolve?.(); },
       completeImpl: async () => [],
