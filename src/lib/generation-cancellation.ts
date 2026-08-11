@@ -19,6 +19,7 @@ export interface GenerationCancellationRequest {
   id: string;
   providerId: string;
   modelId?: string;
+  apiKey?: string;
 }
 
 export interface GenerationCancellationResult {
