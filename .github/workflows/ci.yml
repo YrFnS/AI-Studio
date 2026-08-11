@@ -15,63 +15,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  migrate-protected-media:
-    name: Apply protected media statelessness
-    if: >-
-      github.actor != 'github-actions[bot]' &&
-      (
-        github.ref == 'refs/heads/agent/p0-runtime-integrity' ||
-        github.head_ref == 'agent/p0-runtime-integrity'
-      )
-    permissions:
-      contents: write
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    steps:
-      - name: Check out runtime-integrity branch
-        uses: actions/checkout@v4
-        with:
-          ref: agent/p0-runtime-integrity
-          fetch-depth: 0
-
-      - name: Set up Bun
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: 1.3.4
-
-      - name: Apply protected media migration
-        run: |
-          node scripts/apply-protected-media-statelessness.mjs
-          node scripts/fix-protected-media-migration.mjs
-
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Typecheck
-        run: bun run typecheck
-
-      - name: Test
-        run: bun run test
-
-      - name: Lint
-        run: bun run lint
-
-      - name: Build standalone app
-        run: bun run build:app
-
-      - name: Commit protected media migration
-        run: |
-          if git diff --quiet; then
-            echo "No protected media changes to commit"
-            exit 1
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -m "remove process-memory protected media tokens"
-          git push origin HEAD:agent/p0-runtime-integrity
-
   validate:
     name: Typecheck, test, lint, and build
     runs-on: ubuntu-latest
