@@ -1,43 +1,38 @@
+import {
+  getProviderOperations,
+  type GenerationOperationId,
+} from '@/lib/generation-registry';
+
 export type GenerationKind = 'image' | 'video';
 
-const IMAGE_PROVIDERS = new Set([
-  'openai',
-  'stability',
-  'replicate',
-  'fal',
-  'together',
-  'fireworks',
-  'ideogram',
-  'google-aistudio',
-  'huggingface',
-  'leonardo',
-  'recraft',
-  'bfl',
-  'aimlapi',
+const IMAGE_OPERATIONS = new Set<GenerationOperationId>([
+  'text-to-image',
+  'image-to-image',
+  'edit',
+  'inpaint',
+  'variation',
+  'upscale',
 ]);
 
-const VIDEO_PROVIDERS = new Set([
-  'replicate',
-  'fal',
-  'runway',
-  'luma',
-  'google-aistudio',
+const VIDEO_OPERATIONS = new Set<GenerationOperationId>([
+  'text-to-video',
+  'image-to-video',
 ]);
 
 export function supportsGeneration(
   providerName: string,
   kind: GenerationKind,
 ): boolean {
-  return kind === 'image'
-    ? IMAGE_PROVIDERS.has(providerName)
-    : VIDEO_PROVIDERS.has(providerName);
+  const operations = getProviderOperations(providerName);
+  const expected = kind === 'image' ? IMAGE_OPERATIONS : VIDEO_OPERATIONS;
+  return operations.some((operation) => expected.has(operation));
 }
 
 export function getSupportedGenerationKinds(
   providerName: string,
 ): GenerationKind[] {
   const kinds: GenerationKind[] = [];
-  if (IMAGE_PROVIDERS.has(providerName)) kinds.push('image');
-  if (VIDEO_PROVIDERS.has(providerName)) kinds.push('video');
+  if (supportsGeneration(providerName, 'image')) kinds.push('image');
+  if (supportsGeneration(providerName, 'video')) kinds.push('video');
   return kinds;
 }

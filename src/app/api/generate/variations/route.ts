@@ -1,19 +1,29 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
+
 import { PROVIDERS } from '@/lib/providers-data';
-import { registerGenerationJob } from '@/lib/server-generation-store';
+import { requireModelOperation } from '@/lib/generation-registry';
+import {
+  MAX_SINGLE_IMAGE_REQUEST_BYTES,
+  parseGenerationRequest,
+  variationGenerationRequestSchema,
+} from '@/lib/server/generation-request';
+import {
+  generationErrorResponse,
+  noStoreJson,
+} from '@/lib/server/generation-response';
 import { resolveImageBlob } from '@/lib/server/image-input';
+import { providerFetch as fetch } from '@/lib/server/provider-request';
 
 export const runtime = 'nodejs';
 
-async function getProviderById(id: string) {
-  return PROVIDERS.find((provider) => provider.id === id);
-}
+const STABILITY_MODEL_IDS: Record<string, string> = {
+  'stable-diffusion-3.5-large': 'sd3.5-large',
+  'stable-diffusion-3.5-large-turbo': 'sd3.5-large-turbo',
+  'stable-diffusion-3.5-medium': 'sd3.5-medium',
+};
 
-function json(payload: Record<string, unknown>, status = 200) {
-  return NextResponse.json(payload, {
-    status,
-    headers: { 'Cache-Control': 'no-store' },
-  });
+function getProviderById(id: string) {
+  return PROVIDERS.find((provider) => provider.id === id);
 }
 
 async function variationStability(
@@ -22,113 +32,44 @@ async function variationStability(
     prompt: string;
     negativePrompt?: string;
     variationStrength: number;
+    modelId: string;
     seed?: number;
   },
   apiKey: string,
   providerBaseUrl: string,
 ) {
+  const providerModel = STABILITY_MODEL_IDS[params.modelId];
+  if (!providerModel) {
+    throw new Error(`No Stability variation adapter exists for ${params.modelId}.`);
+  }
+
   const imageBlob = await resolveImageBlob(params.imageUrl);
   const formData = new FormData();
   formData.append('prompt', params.prompt);
-  if (params.negativePrompt) formData.append('negative_prompt', params.negativePrompt);
+  if (params.negativePrompt) {
+    formData.append('negative_prompt', params.negativePrompt);
+  }
   formData.append('image', imageBlob, 'image.png');
+  formData.append('mode', 'image-to-image');
+  formData.append('model', providerModel);
   formData.append('strength', params.variationStrength.toString());
   formData.append('output_format', 'png');
-  if (params.seed) formData.append('seed', params.seed.toString());
+  if (params.seed !== undefined) formData.append('seed', params.seed.toString());
 
-  const response = await fetch(`${providerBaseUrl}/v2beta/stable-image/generate/sd3`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      Accept: 'image/*',
+  const response = await fetch(
+    `${providerBaseUrl}/v2beta/stable-image/generate/sd3`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: 'image/*',
+      },
+      body: formData,
     },
-    body: formData,
-  });
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Stability Variation API error: ${response.status} - ${error}`);
-  }
+  );
 
   const buffer = await response.arrayBuffer();
-  return {
-    urls: [`data:image/png;base64,${Buffer.from(buffer).toString('base64')}`],
-    status: 'completed' as const,
-  };
-}
-
-async function variationReplicate(
-  params: {
-    imageUrl: string;
-    prompt: string;
-    negativePrompt?: string;
-    variationStrength: number;
-    modelId: string;
-    seed?: number;
-  },
-  apiKey: string,
-  providerBaseUrl: string,
-) {
-  const input: Record<string, unknown> = {
-    prompt: params.prompt,
-    image: params.imageUrl,
-    strength: params.variationStrength,
-    num_outputs: 1,
-  };
-  if (params.negativePrompt) input.negative_prompt = params.negativePrompt;
-  if (params.seed) input.seed = params.seed;
-
-  const response = await fetch(`${providerBaseUrl}/v1/predictions`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ model: params.modelId, input }),
-  });
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Replicate Variation API error: ${response.status} - ${error}`);
-  }
-
-  const data = await response.json();
-  return { jobId: data.id, status: 'processing' as const };
-}
-
-async function variationFal(
-  params: {
-    imageUrl: string;
-    prompt: string;
-    negativePrompt?: string;
-    variationStrength: number;
-    modelId: string;
-    seed?: number;
-  },
-  apiKey: string,
-  providerBaseUrl: string,
-) {
-  const body: Record<string, unknown> = {
-    prompt: params.prompt,
-    image_url: params.imageUrl,
-    strength: params.variationStrength,
-  };
-  if (params.negativePrompt) body.negative_prompt = params.negativePrompt;
-  if (params.seed) body.seed = params.seed;
-
-  const response = await fetch(`${providerBaseUrl}/${params.modelId}/requests`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Key ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Fal.ai Variation API error: ${response.status} - ${error}`);
-  }
-
-  const data = await response.json();
-  return { jobId: data.request_id, status: 'processing' as const };
+  return [`data:image/png;base64,${Buffer.from(buffer).toString('base64')}`];
 }
 
 async function variationOpenAI(
@@ -140,7 +81,7 @@ async function variationOpenAI(
   const formData = new FormData();
   formData.append('prompt', params.prompt);
   formData.append('image', imageBlob, 'image.png');
-  formData.append('model', params.modelId || 'gpt-image-1');
+  formData.append('model', params.modelId);
   formData.append('n', '1');
 
   const response = await fetch(`${providerBaseUrl}/images/edits`, {
@@ -148,122 +89,68 @@ async function variationOpenAI(
     headers: { Authorization: `Bearer ${apiKey}` },
     body: formData,
   });
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`OpenAI Variation API error: ${response.status} - ${error}`);
-  }
 
   const data = await response.json();
-  return {
-    urls: (data.data || []).map((image: { url?: string; b64_json?: string }) => (
-      image.url || `data:image/png;base64,${image.b64_json}`
-    )),
-    status: 'completed' as const,
-  };
+  return (data.data || []).map((image: { url?: string; b64_json?: string }) => (
+    image.url || `data:image/png;base64,${image.b64_json}`
+  ));
 }
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
     const {
       providerId,
       modelId,
       imageUrl,
       prompt,
       negativePrompt,
+      reviewedRegistration,
       apiKey,
       variationStrength,
       seed,
-    } = body as {
-      providerId?: string;
-      modelId?: string;
-      imageUrl?: string;
-      prompt?: string;
-      negativePrompt?: string;
-      apiKey?: string;
-      variationStrength?: number;
-      seed?: number;
-    };
-
-    if (!providerId || !imageUrl || !prompt) {
-      return json({ error: 'providerId, imageUrl, and prompt are required' }, 400);
-    }
-    if (!apiKey) return json({ error: 'API key is required' }, 400);
-
-    const provider = await getProviderById(providerId);
-    if (!provider) return json({ error: 'Provider not found' }, 404);
-
-    const strength = Math.max(0.3, Math.min(1, variationStrength ?? 0.7));
-    const effectiveModelId = modelId || (
-      provider.name === 'stability' ? 'stable-diffusion-3.5-large' : 'gpt-image-1'
+    } = await parseGenerationRequest(
+      req,
+      variationGenerationRequestSchema,
+      MAX_SINGLE_IMAGE_REQUEST_BYTES,
     );
 
-    let result:
-      | { urls: string[]; status: 'completed' }
-      | { jobId: string; status: 'processing' };
+    const provider = getProviderById(providerId);
+    if (!provider) {
+      return noStoreJson({
+        error: 'Provider not found',
+        code: 'provider_not_found',
+      }, 404);
+    }
 
+    requireModelOperation(provider.name, modelId, 'variation', 'variations', reviewedRegistration);
+
+    let urls: string[];
     switch (provider.name) {
       case 'stability':
-        result = await variationStability({
+        urls = await variationStability({
           imageUrl,
           prompt,
           negativePrompt,
-          variationStrength: strength,
-          seed,
-        }, apiKey, provider.baseUrl);
-        break;
-      case 'replicate':
-        result = await variationReplicate({
-          imageUrl,
-          prompt,
-          negativePrompt,
-          variationStrength: strength,
-          modelId: effectiveModelId,
-          seed,
-        }, apiKey, provider.baseUrl);
-        break;
-      case 'fal':
-        result = await variationFal({
-          imageUrl,
-          prompt,
-          negativePrompt,
-          variationStrength: strength,
-          modelId: effectiveModelId,
+          variationStrength,
+          modelId,
           seed,
         }, apiKey, provider.baseUrl);
         break;
       case 'openai':
-        result = await variationOpenAI({
-          imageUrl,
-          prompt,
-          modelId: effectiveModelId,
-        }, apiKey, provider.baseUrl);
+        urls = await variationOpenAI({ imageUrl, prompt, modelId }, apiKey, provider.baseUrl);
         break;
       default:
-        throw new Error(`Image variations are not supported for provider: ${provider.displayName}`);
+        return noStoreJson({
+          error: `No registered variation adapter is available for ${provider.displayName}.`,
+          code: 'adapter_not_configured',
+        }, 400);
     }
 
-    if (result.status === 'processing') {
-      const localJobId = registerGenerationJob({
-        provider: provider.name,
-        providerJobId: result.jobId,
-        modelId: effectiveModelId,
-        apiKey,
-      });
-      return json({
-        id: localJobId,
-        jobId: localJobId,
-        localJob: true,
-        status: 'processing',
-        message: 'Variation in progress. Poll /api/generate/status for results.',
-      });
-    }
-
-    return json({ status: 'completed', urls: result.urls });
+    return noStoreJson({ status: 'completed', urls });
   } catch (error) {
-    console.error('Variation image error:', error);
-    return json({
-      error: error instanceof Error ? error.message : 'Failed to create variation',
-    }, 500);
+    return generationErrorResponse(error, {
+      logLabel: 'Variation image error',
+      fallbackMessage: 'Failed to create variation',
+    });
   }
 }

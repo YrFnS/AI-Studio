@@ -6,20 +6,32 @@ AI Studio is a local-first, multi-provider workspace for AI image and video gene
 
 - **No external database** — there is no PostgreSQL, SQLite, Prisma, Supabase, or hosted database requirement.
 - **UI-managed provider keys** — users add and remove keys from the web interface; provider keys are not configured through `.env` files.
-- **Browser persistence** — keys, generations, prompts, collections, reference images, and custom models are stored in IndexedDB.
-- **Local provider proxy** — Next.js routes running on the same machine translate requests to each provider's API format.
+- **Browser persistence** — keys, generations, prompts, collections, reference images, custom model definitions, and downloaded protected media are stored in IndexedDB.
+- **Explicit generation client** — every browser module that submits or polls generation work imports the shared client directly; AI Studio does not replace `window.fetch` globally.
+- **Typed generation lifecycle** — primary studios, model comparison, editing, and derived actions share one submit, poll, persist, queue, cancellation, and recovery contract.
+- **Authoritative operation registry** — every executable provider/model/operation combination declares its owning route, adapter, and verification level. Raw catalog capability labels cannot make a model executable.
+- **Reviewed model registration** — custom and discovered definitions remain inert until mapped to a bounded adapter profile, documented, acknowledged, and locally approved; routes revalidate the approval on every request.
+- **P0 evidence lab** — Settings captures credential-free live-test checkpoints, inspects durable IndexedDB outcomes, verifies duplicate-free recovery, and exports reviewable evidence packets.
+- **Strict route schemas** — generation routes reject malformed, oversized, unknown, or out-of-range input before provider contact.
+- **Bounded provider transport** — provider submissions and status checks have deadlines, bounded error reads, and normalized public errors.
+- **Safe image ingestion** — reference images have one 10 MB binary limit, strict image types, HTTPS-only remote fetching, redirect limits, and private-network blocking.
+- **Restart-safe protected media** — authenticated provider outputs use credential-free descriptors, POST-only retrieval, and locally persisted Blobs rather than process-memory tokens.
+- **Versioned local backup** — Settings can export and restore non-key IndexedDB data, reference images, prompts, collections, custom/discovered definitions, and downloaded media assets.
+- **Production browser hardening** — a Content Security Policy and security headers are applied through the Next.js configuration.
 - **No persistent server-side credentials** — provider keys are not written to a server database or configuration file.
-- **Secure async polling** — long-running jobs use opaque local tokens instead of placing provider keys in status URLs.
+- **Stateless async polling** — long-running jobs return credential-free tokens containing only provider job metadata; polling sends the locally stored key in a POST body.
 
 ## Features
 
-- **Image Studio** — text-to-image, image-to-image, editing, inpainting, variations, upscaling, style controls, and advanced parameters
-- **Video Studio** — text-to-video and image-to-video through supported provider adapters
+- **Image Studio** — text-to-image, registered image-to-image models, editing, inpainting, variations, upscaling, style controls, and advanced parameters
+- **Video Studio** — text-to-video and image-to-video through registered provider adapters
 - **Cinema Studio** — camera, lens, focal length, aperture, film stock, color grade, lighting, and scene presets
-- **Gallery** — search, favorites, timeline views, metadata, and collections
+- **Gallery** — full IndexedDB search, favorites, timeline views, metadata, collections, and locally persisted protected outputs
+- **Local backup and restore** — versioned non-key backups with replace or merge restore modes and downloaded media assets
 - **Prompt tools** — history, templates, suggestions, quick starters, and a structured prompt builder
 - **Model comparison** — run supported image models side by side
-- **Custom and discovered models** — combine the built-in catalog with locally saved and dynamically discovered entries
+- **Custom and discovered model review** — save inert candidates, review provider documentation, approve bounded adapter contracts, and revoke selector access at any time
+- **Live evidence lab** — record immediate results, restart recovery, protected media, provider cancellation, and contract smoke tests without exporting keys
 - **Generation queue** — monitor asynchronous work without blocking the studio
 - **Keyboard shortcuts** — fast navigation and generation controls
 
@@ -29,7 +41,8 @@ AI Studio is a local-first, multi-provider workspace for AI image and video gene
 - React 19 and TypeScript
 - Tailwind CSS 4 and shadcn/ui with Radix primitives
 - Zustand for application state
-- IndexedDB for local persistence
+- IndexedDB for metadata and generated media persistence
+- Zod for route contracts and parameter bounds
 - Framer Motion for interface animation
 - Bun for dependency management and scripts
 
@@ -71,32 +84,134 @@ bun run check
 
 - Provider API keys and optional labels
 - Generation history and result metadata
+- Downloaded protected image or video Blobs
 - Prompt history and saved prompts
 - Collections and collection membership
 - Reference images and thumbnails
-- Custom models and cached model discovery results
+- Custom model definitions, cached model discovery results, and locally reviewed execution contracts
 
-Clearing this site's browser storage removes this locally persisted data.
+Clearing this site's browser storage removes this locally persisted data, including downloaded protected outputs.
 
-### Sent during generation
+### Sent during generation and polling
 
-When a user starts a generation, the browser reads the selected provider key from IndexedDB and sends it to the local Next.js route. That local route calls the chosen provider. The key is used for that request but is not persisted in a server-side database.
+Every browser generation caller imports `generationFetch` from `src/lib/generation-client.ts`. The client reads the selected provider key from IndexedDB when the caller did not already supply it, sends the request to the local Next.js route, and leaves unrelated network requests untouched. No global fetch monkey patch is installed.
 
-For asynchronous providers, AI Studio temporarily retains the provider job context in local process memory and returns an opaque local job token to the browser. Status polling uses that token, so credentials are not placed in query strings, browser history, or proxy access logs. Restarting the local process clears temporary job and protected-media tokens.
+`src/lib/generation-lifecycle.ts` owns the durable lifecycle for new and interrupted work: creation, submission, asynchronous polling, queue updates, completion or failure persistence, local cancellation, page detachment, recovery, and protected-media finalization. Immediate provider results and asynchronous jobs use the same terminal path.
+
+`src/lib/generation-registry.ts` is the executable source of truth. A model must have a contract for the exact operation and route before it can appear in generation selectors or reach a provider. Each contract records an adapter ID and one of three verification levels:
+
+- `adapter-implemented` — code exists and automated contract coverage passes
+- `contract-reviewed` — the adapter has also been checked against provider documentation
+- `live-verified` — an owner-supplied-key smoke test has been recorded
+
+No contract is promoted to `live-verified` without manual evidence.
+
+## Reviewed custom and discovered models
+
+Settings → Review turns custom or provider-discovered metadata into an executable local contract only through an explicit review:
+
+1. The model remains a non-executable candidate by default.
+2. The user selects a source-defined adapter profile with fixed provider, operation, route, request shape, and model-ID rule.
+3. Approval requires an HTTPS provider-documentation URL, meaningful contract notes, and an explicit acknowledgement.
+4. Approved registrations are stored in IndexedDB and included in normal non-key backups.
+5. The explicit generation client adds the approved registration only to the matching provider/model/operation request.
+6. The server validates the full registration, profile, model ID, operation, and route before contacting the provider.
+7. Static catalog entries cannot be shadowed or broadened by local approval, and revoked or draft registrations never appear in generation selectors.
+
+A local approval is recorded as `contract-reviewed`; it is not `live-verified`. Providers without a bounded source-defined profile remain metadata-only until a developer implements and tests one.
+
+For editing and derived actions, `src/lib/generation-operation.ts` consumes these registry contracts and builds the dedicated edit, upscale, variation, or image-to-video request. The request body remains credential-free until the explicit client injects the matching locally stored provider key.
+
+When a user starts a generation, the local route first parses the body through the operation-specific Zod schema in `src/lib/server/generation-request.ts`. The parser enforces content type, total body size, required fields, strict unknown-field rejection, and parameter bounds. The route then calls `requireModelOperation` before contacting the selected provider.
+
+Provider calls use `src/lib/server/provider-request.ts`. Generation submissions have a 120-second deadline, status checks have a 20-second deadline, and provider error bodies are read only up to 8 KB. Authentication, quota, rejected-request, timeout, network, unavailable, and invalid-response failures are normalized. Raw provider response text is not returned to the browser.
+
+For asynchronous providers, the submission route returns a stateless token containing the provider name, model ID, provider job ID, and media kind. The token never includes the provider API key. Each status request is a POST that supplies the token and reads the provider key again from IndexedDB. This allows polling to continue after the local Next.js process restarts without storing provider credentials in process memory.
+
+The shared polling coordinator applies bounded retry, backoff, deadline, cancellation, and terminal-error behavior. `PendingGenerationRecovery` scans IndexedDB after a new page session and resumes older processing jobs through the same polling and persistence path.
+
+## P0 live evidence
+
+Settings → Evidence creates local checkpoints tied to durable generation IDs. It can verify completed media, duplicate provider-job records, restart-session changes, protected-media Blob persistence, and local Blob URL recreation. Provider-side facts that the browser cannot observe require an explicit operator confirmation.
+
+Evidence records are stored under the local `ai-studio-p0-evidence-v1` key, included in normal non-key backups, and exportable as a separate JSON packet declaring `includesApiKeys: false`. Notes that resemble API keys or authorization headers are rejected.
+
+The complete operator procedure is documented in [docs/P0-LIVE-EVIDENCE-RUNBOOK.md](docs/P0-LIVE-EVIDENCE-RUNBOOK.md). A passing evidence record supports review but does not automatically promote a source contract to `live-verified`.
+
+## Local backup and restore
+
+Settings → Transfer exports a versioned JSON backup directly in the browser. It includes non-key IndexedDB metadata, prompts, collections, reference images, custom and discovered model definitions, reviewed model registrations, and downloaded media Blobs encoded for transfer. API keys are deliberately excluded and remain in their separate, explicitly warned plain-text key export flow.
+
+Restore supports two modes:
+
+- **Replace** clears non-key AI Studio stores before restoring the backup.
+- **Merge** keeps unrelated local records and replaces records that share the same IndexedDB key.
+
+Both modes preserve stored API keys. Large downloaded videos can produce large backup files because the media is included in the browser-generated JSON.
+
+## Protected media flow
+
+Some providers return authenticated media rather than a public result URL. AI Studio handles those outputs without server-side credential storage or process-memory tokens:
+
+1. The status route returns a credential-free descriptor containing the provider and provider job ID.
+2. The browser reloads the matching key from IndexedDB and sends the descriptor and key to `/api/generate/media` in a POST body.
+3. The media route rechecks the completed provider operation, accepts only trusted provider media hosts, and streams the file through bounded transport.
+4. The browser validates the response and stores the resulting Blob in the IndexedDB `mediaAssets` store.
+5. The generation record stores only the local asset ID, MIME type, and byte size.
+6. Gallery reads recreate session-scoped `blob:` URLs from the locally stored asset after reload or restart.
+
+The media key is never placed in a URL, the protected provider URL is never exposed to the browser, and deleting a generation also deletes its stored media asset. The current local asset ceiling is 512 MB per protected output.
+
+## Reference image handling
+
+Reference images are limited to 10 MB of decoded binary data and must be PNG, JPEG, WebP, or GIF.
+
+Browser upload flows validate type and size before `FileReader` or base64 conversion. The local upload route repeats those checks before returning a data URL.
+
+Remote image inputs must:
+
+- use HTTPS,
+- contain no URL credentials,
+- resolve only to public addresses,
+- remain below the redirect and timeout limits,
+- return image content,
+- and stream no more than 10 MB.
+
+This prevents provider adapters from becoming an unrestricted server-side URL fetcher.
+
+## Security headers
+
+`src/lib/security-headers.ts` is applied to every route through `next.config.ts`.
+
+Production includes:
+
+- Content Security Policy
+- HTTP Strict Transport Security
+- `X-Content-Type-Options: nosniff`
+- `X-Frame-Options: DENY`
+- strict referrer policy
+- restrictive permissions policy
+- Cross-Origin Opener Policy
+- disabled DNS prefetching
+- disabled `X-Powered-By`
+
+The production CSP blocks object embedding and framing, restricts base URIs and form actions, and does not permit `unsafe-eval`. Development permits the evaluator required by the Next.js development runtime.
 
 ## Provider support
 
-The provider endpoint exposes only model/provider combinations that have a matching executable adapter. The catalog can still contain additional definitions for future work, but unsupported combinations are hidden from generation selectors.
+`/api/providers` filters the static catalog through the authoritative registry. A catalog entry may remain available for future work or settings metadata without being exposed as an executable model.
 
-The verified video catalog currently includes:
+The currently registered video model families include:
 
 - Replicate — Seedance 2.0
 - fal — Seedance 2.0 and Seedance 2.0 Fast
-- Runway — Gen-4.5 and Gen-4 Turbo
+- Runway — Gen-4.5 and Gen-4 Turbo, with operation-specific availability
 - Luma — Ray 2 and Ray 2 Flash
 - Google AI Studio — Veo 3.1 and Veo 3.1 Fast
 
-Image support includes the providers implemented in `src/app/api/generate/handlers.ts` and filtered by `src/lib/provider-capabilities.ts`.
+Image, editing, variation, and upscale support is defined per model in `src/lib/generation-registry.ts`, not by provider-wide capability flags. The live-verification state for each contract remains part of the P0 completion gate.
+
+Custom or dynamically discovered models are never merged directly into Image, Video, or Cinema generation selectors. Settings → Review can approve only source-defined bounded adapter profiles; every request carries the matching approval for server revalidation. Models without a safe profile remain metadata-only.
 
 ## Project structure
 
@@ -104,26 +219,41 @@ Image support includes the providers implemented in `src/app/api/generate/handle
 src/
 ├── app/
 │   ├── api/
-│   │   ├── generate/             # Provider submission, polling, and media proxy routes
+│   │   ├── generate/             # Validated submission, polling, protected media, editing, and derived routes
 │   │   ├── keys/                 # Provider-key connection tests
 │   │   ├── models/               # Model catalog and discovery endpoints
 │   │   ├── prompt-suggestions/   # Prompt assistance
 │   │   ├── prompt-templates/     # Curated templates
-│   │   └── providers/            # Executable provider/model listing
+│   │   └── providers/            # Registry-filtered provider/model listing
 │   ├── globals.css
 │   ├── layout.tsx
 │   └── page.tsx
 ├── components/
-│   ├── studio/                   # Image, video, cinema, gallery, and settings workspaces
-│   ├── ui/                       # Shared shadcn/Radix components
-│   └── secure-provider-fetch-bridge.tsx
+│   ├── pending-generation-recovery.tsx
+│   ├── studio/                   # Studios, editors, lifecycle hooks, gallery, settings, and model review
+│   └── ui/                       # Shared shadcn/Radix components
 ├── hooks/
 └── lib/
-    ├── idb.ts                    # Browser persistence
-    ├── provider-capabilities.ts  # Executable adapter matrix
-    ├── providers-data.ts         # Static provider and model definitions
-    ├── server-generation-store.ts
-    └── server-media-store.ts
+    ├── generation-client.ts      # Explicit browser transport and key injection
+    ├── generation-job.ts         # Credential-free stateless async job tokens
+    ├── generation-lifecycle.ts   # Submit, poll, persist, queue, cancel, resume, and media finalization
+    ├── generation-operation.ts   # Derived-action planning from registry contracts
+    ├── generation-poller.ts      # Shared resilient polling policy
+    ├── generation-registry.ts    # Provider/model/operation/route/adapter source of truth
+    ├── model-registration.ts       # Bounded review profiles and server approval validation
+    ├── model-registration-client.ts # IndexedDB approval lookup and selector decoration
+    ├── protected-media.ts        # Credential-free protected-media descriptors and limits
+    ├── protected-media-client.ts # POST-only authenticated media retrieval
+    ├── reference-image-limits.ts # Shared browser and server image limits
+    ├── security-headers.ts       # CSP and production browser hardening
+    ├── server/
+    │   ├── generation-request.ts # Zod schemas and bounded request parsing
+    │   ├── generation-response.ts # Normalized public route errors
+    │   ├── image-input.ts        # SSRF-safe, size-bounded image loading
+    │   ├── provider-request.ts   # Provider deadlines, bounded streaming, and error normalization
+    │   └── replicate.ts          # Official-model and version routing
+    ├── idb.ts                    # Browser metadata and media-asset persistence
+    └── providers-data.ts         # Static provider and model definitions
 ```
 
 ## Reference sources and notices

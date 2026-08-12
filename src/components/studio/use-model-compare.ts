@@ -1,16 +1,28 @@
 'use client';
 
+import { generationFetch as fetch } from '@/lib/generation-client';
+
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { toast } from 'sonner';
 
 import { useAppStore } from '@/lib/store';
 import { useApiKeys } from '@/hooks/use-api-keys';
+import {
+  GenerationLifecycleError,
+  startGenerationJob,
+  type GenerationJobHandle,
+} from '@/lib/generation-lifecycle';
+import {
+  createGenerationId,
+  type GenerationDescriptor,
+} from '@/lib/generation-persistence';
 
 import type { Provider, CompareResult, CompareSlot } from './model-compare-types';
 
 // ---------------------------------------------------------------------------
 // Custom Hook: useModelCompare
-// Encapsulates all comparison state management, API calls, and polling logic
+// Comparison results now share the same submit → persist → poll → terminal
+// lifecycle as the primary studios and are saved to the Gallery.
 // ---------------------------------------------------------------------------
 
 export function useModelCompare(
@@ -34,16 +46,25 @@ export function useModelCompare(
 
   const apiKeysHook = useApiKeys();
 
-  // Local state
   const [providers, setProviders] = useState<Provider[]>([]);
   const [providersLoading, setProvidersLoading] = useState(true);
   const [sharedPrompt, setSharedPrompt] = useState(defaultPrompt);
   const [sharedNegPrompt, setSharedNegPrompt] = useState(defaultNegativePrompt);
   const [results, setResults] = useState<CompareResult[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
-  const pollingRefs = useRef<Map<string, NodeJS.Timeout>>(new Map());
+  const handlesRef = useRef<Map<number, GenerationJobHandle>>(new Map());
+  const runIdRef = useRef(0);
+  const mountedRef = useRef(true);
 
-  // Fetch providers
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+      // Do not cancel provider work on unmount. Lifecycle persistence and the
+      // startup recovery path remain responsible for eventual terminal state.
+      handlesRef.current.clear();
+    };
+  }, []);
+
   useEffect(() => {
     fetch('/api/providers')
       .then((res) => res.json())
@@ -51,7 +72,8 @@ export function useModelCompare(
         const provs = (data.providers || data || []).map((p: Provider) => ({
           ...p,
           models: (p.models || []).filter(
-            (m: { type: string; capabilities?: string }) => m.type === 'image' && m.capabilities?.includes('t2i')
+            (m: { type: string; capabilities?: string }) =>
+              m.type === 'image' && m.capabilities?.includes('t2i'),
           ),
         }));
         setProviders(provs.filter((p: Provider) => p.models.length > 0));
@@ -60,225 +82,193 @@ export function useModelCompare(
       .finally(() => setProvidersLoading(false));
   }, []);
 
-  // Initialize slots when dialog opens
   useEffect(() => {
-    if (isCompareOpen) {
-      setSharedPrompt(defaultPrompt);
-      setSharedNegPrompt(defaultNegativePrompt);
+    if (!isCompareOpen) return;
 
-      // Set first slot to the current provider/model
-      if (compareSlots[0]?.providerId !== defaultProviderId || compareSlots[0]?.modelId !== defaultModelId) {
-        const newSlots = [...compareSlots];
-        newSlots[0] = { providerId: defaultProviderId, modelId: defaultModelId };
-        // Keep second slot or leave empty
-        if (!newSlots[1]) {
-          newSlots[1] = { providerId: '', modelId: '' };
-        }
-        setCompareSlots(newSlots);
-      }
+    setSharedPrompt(defaultPrompt);
+    setSharedNegPrompt(defaultNegativePrompt);
 
-      // Reset results
-      setResults(
-        compareSlots.map((_: CompareSlot, i: number) => ({
-          slotIndex: i,
-          status: 'idle',
-          resultUrl: null,
-          error: null,
-          cost: null,
-          providerName: '',
-          modelName: '',
-          providerColor: '',
-        }))
-      );
+    if (
+      compareSlots[0]?.providerId !== defaultProviderId
+      || compareSlots[0]?.modelId !== defaultModelId
+    ) {
+      const newSlots = [...compareSlots];
+      newSlots[0] = {
+        providerId: defaultProviderId,
+        modelId: defaultModelId,
+      };
+      if (!newSlots[1]) newSlots[1] = { providerId: '', modelId: '' };
+      setCompareSlots(newSlots);
     }
-  }, [isCompareOpen, defaultProviderId, defaultModelId, defaultPrompt, defaultNegativePrompt]);
 
-  // Cleanup polling on unmount
-  useEffect(() => {
-    return () => {
-      pollingRefs.current.forEach((timer) => clearInterval(timer));
-      pollingRefs.current.clear();
-    };
-  }, []);
+    setResults(
+      compareSlots.map((_: CompareSlot, index: number) => ({
+        slotIndex: index,
+        status: 'idle',
+        resultUrl: null,
+        error: null,
+        cost: null,
+        providerName: '',
+        modelName: '',
+        providerColor: '',
+      })),
+    );
+  }, [
+    isCompareOpen,
+    defaultProviderId,
+    defaultModelId,
+    defaultPrompt,
+    defaultNegativePrompt,
+  ]);
 
-  // Poll for async job result
-  const startPollingForResult = useCallback(
-    (jobId: string, slotIndex: number, providerName: string, modelName: string, providerColor: string, providerId: string) => {
-      const pollInterval = setInterval(async () => {
-        try {
-          const apiKey = await apiKeysHook.getKeyForProvider(providerId);
-          const res = await fetch(`/api/generate/status?id=${jobId}${apiKey ? `&apiKey=${encodeURIComponent(apiKey)}` : ''}`);
-          const data = await res.json();
-
-          if (data.status === 'completed' && data.resultUrl) {
-            clearInterval(pollInterval);
-            pollingRefs.current.delete(jobId);
-            setResults((prev) =>
-              prev.map((r) =>
-                r.slotIndex === slotIndex
-                  ? { ...r, status: 'completed', resultUrl: data.resultUrl, cost: data.cost || null }
-                  : r
-              )
-            );
-          } else if (data.status === 'failed') {
-            clearInterval(pollInterval);
-            pollingRefs.current.delete(jobId);
-            setResults((prev) =>
-              prev.map((r) =>
-                r.slotIndex === slotIndex
-                  ? { ...r, status: 'failed', error: data.error || 'Generation failed' }
-                  : r
-              )
-            );
-          }
-        } catch {
-          clearInterval(pollInterval);
-          pollingRefs.current.delete(jobId);
-          setResults((prev) =>
-            prev.map((r) =>
-              r.slotIndex === slotIndex
-                ? { ...r, status: 'failed', error: 'Polling error' }
-                : r
-            )
-          );
-        }
-      }, 3000);
-
-      pollingRefs.current.set(jobId, pollInterval);
+  const updateResult = useCallback(
+    (slotIndex: number, patch: Partial<CompareResult>) => {
+      if (!mountedRef.current) return;
+      setResults((previous) => previous.map((result) =>
+        result.slotIndex === slotIndex
+          ? { ...result, ...patch }
+          : result,
+      ));
     },
-    [apiKeysHook]
+    [],
   );
 
-  // Generate all slots in parallel
   const handleGenerateAll = useCallback(async () => {
-    if (!sharedPrompt.trim()) {
+    const prompt = sharedPrompt.trim();
+    if (!prompt) {
       toast.error('Please enter a prompt');
       return;
     }
 
-    // Check all slots have provider and model
-    const validSlots = compareSlots.filter((s) => s.providerId && s.modelId);
+    const validSlots = compareSlots.filter(
+      (slot) => slot.providerId && slot.modelId,
+    );
     if (validSlots.length === 0) {
       toast.error('Please configure at least one slot with a provider and model');
       return;
     }
 
-    // Check API keys
     for (const slot of validSlots) {
-      const hasKey = apiKeysHook.hasKey(slot.providerId);
-      if (!hasKey) {
-        const prov = providers.find((p) => p.id === slot.providerId);
-        toast.error(`No API key for ${prov?.displayName || slot.providerId}`);
+      if (!apiKeysHook.hasKey(slot.providerId)) {
+        const provider = providers.find((item) => item.id === slot.providerId);
+        toast.error(`No API key for ${provider?.displayName || slot.providerId}`);
         return;
       }
     }
 
+    const runId = runIdRef.current + 1;
+    runIdRef.current = runId;
+    handlesRef.current.clear();
     setIsGenerating(true);
 
-    // Initialize results for all slots
-    const initialResults: CompareResult[] = compareSlots.map((slot, i) => ({
-      slotIndex: i,
-      status: slot.providerId && slot.modelId ? 'generating' : 'idle',
-      resultUrl: null,
-      error: null,
-      cost: null,
-      providerName: providers.find((p) => p.id === slot.providerId)?.displayName || '',
-      modelName:
-        providers
-          .find((p) => p.id === slot.providerId)
-          ?.models.find((m) => m.modelId === slot.modelId)?.name || '',
-      providerColor: providers.find((p) => p.id === slot.providerId)?.color || '',
+    setResults(compareSlots.map((slot, index) => {
+      const provider = providers.find((item) => item.id === slot.providerId);
+      return {
+        slotIndex: index,
+        status: slot.providerId && slot.modelId ? 'generating' : 'idle',
+        resultUrl: null,
+        error: null,
+        cost: null,
+        providerName: provider?.displayName || '',
+        modelName: provider?.models.find(
+          (model) => model.modelId === slot.modelId,
+        )?.name || '',
+        providerColor: provider?.color || '',
+      };
     }));
-    setResults(initialResults);
 
-    // Fire all generations in parallel
-    const promises = validSlots.map(async (slot) => {
+    const tasks = validSlots.map(async (slot) => {
       const slotIndex = compareSlots.indexOf(slot);
-      const providerData = providers.find((p) => p.id === slot.providerId);
-      const modelData = providerData?.models.find((m) => m.modelId === slot.modelId);
-
-      try {
-        const apiKey = await apiKeysHook.getKeyForProvider(slot.providerId);
-        if (!apiKey) {
-          setResults((prev) =>
-            prev.map((r) =>
-              r.slotIndex === slotIndex
-                ? { ...r, status: 'failed', error: 'No API key' }
-                : r
-            )
-          );
-          return;
-        }
-
-        const body = {
-          providerId: slot.providerId,
-          modelId: slot.modelId,
-          prompt: sharedPrompt.trim(),
-          negativePrompt: sharedNegPrompt.trim() || undefined,
+      const provider = providers.find((item) => item.id === slot.providerId);
+      const model = provider?.models.find(
+        (item) => item.modelId === slot.modelId,
+      );
+      const createdAt = Date.now();
+      const descriptor: GenerationDescriptor = {
+        id: createGenerationId('img'),
+        providerId: slot.providerId,
+        providerName: provider?.displayName || slot.providerId,
+        modelId: slot.modelId,
+        type: 'image',
+        prompt,
+        negativePrompt: sharedNegPrompt.trim() || undefined,
+        params: {
           aspectRatio: imageAspectRatio,
           quality: imageQuality,
           steps: imageSteps,
           guidance: imageGuidance,
-          seed: imageSeed ?? undefined,
+          seed: imageSeed,
           batchSize: 1,
-          apiKey,
-        };
+          source: 'model-compare',
+          comparisonSlot: slotIndex,
+        },
+        createdAt,
+      };
+      const body: Record<string, unknown> = {
+        providerId: slot.providerId,
+        modelId: slot.modelId,
+        prompt,
+        negativePrompt: sharedNegPrompt.trim() || undefined,
+        aspectRatio: imageAspectRatio,
+        quality: imageQuality,
+        steps: imageSteps,
+        guidance: imageGuidance,
+        seed: imageSeed ?? undefined,
+        batchSize: 1,
+      };
 
-        const res = await fetch('/api/generate/image', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
+      const handle = startGenerationJob({
+        descriptor,
+        endpoint: '/api/generate/image',
+        body,
+        pollPolicy: { maxElapsedMs: 25 * 60 * 1000 },
+      });
+      handlesRef.current.set(slotIndex, handle);
+      const unsubscribe = handle.subscribe((snapshot) => {
+        if (runIdRef.current !== runId) return;
+        if (snapshot.state === 'processing') {
+          updateResult(slotIndex, { jobId: snapshot.providerJobId });
+        }
+      });
+
+      try {
+        const lifecycleResult = await handle.result;
+        if (runIdRef.current !== runId) return;
+        updateResult(slotIndex, {
+          status: 'completed',
+          resultUrl: lifecycleResult.urls[0] || null,
+          error: null,
+          cost:
+            typeof lifecycleResult.payload.cost === 'string'
+              ? lifecycleResult.payload.cost
+              : null,
+          providerName: provider?.displayName || slot.providerId,
+          modelName: model?.name || slot.modelId,
+          providerColor: provider?.color || '',
+          jobId: lifecycleResult.providerJobId,
         });
-
-        const data = await res.json();
-
-        if (!res.ok) {
-          throw new Error(data.error || 'Generation failed');
+      } catch (error) {
+        if (runIdRef.current !== runId) return;
+        if (
+          error instanceof GenerationLifecycleError
+          && (error.code === 'detached' || error.code === 'cancelled')
+        ) {
+          return;
         }
-
-        if (data.status === 'completed' && data.urls) {
-          // Direct result
-          setResults((prev) =>
-            prev.map((r) =>
-              r.slotIndex === slotIndex
-                ? {
-                    ...r,
-                    status: 'completed',
-                    resultUrl: data.urls[0] || null,
-                  }
-                : r
-            )
-          );
-        } else if (data.status === 'processing' && data.id) {
-          // Async - start polling
-          startPollingForResult(
-            data.id,
-            slotIndex,
-            providerData?.displayName || '',
-            modelData?.name || '',
-            providerData?.color || '',
-            slot.providerId
-          );
-        } else {
-          throw new Error('Unexpected response');
-        }
-      } catch (err) {
-        setResults((prev) =>
-          prev.map((r) =>
-            r.slotIndex === slotIndex
-              ? {
-                  ...r,
-                  status: 'failed',
-                  error: err instanceof Error ? err.message : 'Generation failed',
-                }
-              : r
-          )
-        );
+        updateResult(slotIndex, {
+          status: 'failed',
+          error: error instanceof Error ? error.message : 'Generation failed',
+        });
+      } finally {
+        unsubscribe();
+        handlesRef.current.delete(slotIndex);
       }
     });
 
-    await Promise.allSettled(promises);
-    setIsGenerating(false);
+    await Promise.allSettled(tasks);
+    if (mountedRef.current && runIdRef.current === runId) {
+      setIsGenerating(false);
+    }
   }, [
     sharedPrompt,
     sharedNegPrompt,
@@ -290,15 +280,14 @@ export function useModelCompare(
     imageSteps,
     imageGuidance,
     imageSeed,
-    startPollingForResult,
+    updateResult,
   ]);
 
-  // Add/remove slot
   const addSlot = useCallback(() => {
     if (compareSlots.length >= 3) return;
     setCompareSlots([...compareSlots, { providerId: '', modelId: '' }]);
-    setResults((prev) => [
-      ...prev,
+    setResults((previous) => [
+      ...previous,
       {
         slotIndex: compareSlots.length,
         status: 'idle',
@@ -314,80 +303,80 @@ export function useModelCompare(
 
   const removeSlot = useCallback(() => {
     if (compareSlots.length <= 2) return;
+    const removedIndex = compareSlots.length - 1;
+    void handlesRef.current.get(removedIndex)?.cancel(
+      'Comparison slot removed by user',
+    );
+    handlesRef.current.delete(removedIndex);
     setCompareSlots(compareSlots.slice(0, -1));
-    setResults((prev) => prev.slice(0, -1));
+    setResults((previous) => previous.slice(0, -1));
   }, [compareSlots, setCompareSlots]);
 
-  // Handle provider/model change with result reset
   const handleProviderChange = useCallback(
     (slotIndex: number, providerId: string) => {
-      updateCompareSlot(slotIndex, { providerId, modelId: '' });
-      setResults((prev) =>
-        prev.map((r) =>
-          r.slotIndex === slotIndex
-            ? { ...r, status: 'idle', resultUrl: null, error: null }
-            : r
-        )
+      void handlesRef.current.get(slotIndex)?.cancel(
+        'Comparison provider changed by user',
       );
+      handlesRef.current.delete(slotIndex);
+      updateCompareSlot(slotIndex, { providerId, modelId: '' });
+      updateResult(slotIndex, {
+        status: 'idle',
+        resultUrl: null,
+        error: null,
+        jobId: undefined,
+      });
     },
-    [updateCompareSlot]
+    [updateCompareSlot, updateResult],
   );
 
   const handleModelChange = useCallback(
     (slotIndex: number, modelId: string) => {
-      updateCompareSlot(slotIndex, { modelId });
-      setResults((prev) =>
-        prev.map((r) =>
-          r.slotIndex === slotIndex
-            ? { ...r, status: 'idle', resultUrl: null, error: null }
-            : r
-        )
+      void handlesRef.current.get(slotIndex)?.cancel(
+        'Comparison model changed by user',
       );
+      handlesRef.current.delete(slotIndex);
+      updateCompareSlot(slotIndex, { modelId });
+      updateResult(slotIndex, {
+        status: 'idle',
+        resultUrl: null,
+        error: null,
+        jobId: undefined,
+      });
     },
-    [updateCompareSlot]
+    [updateCompareSlot, updateResult],
   );
 
-  // Handle "Use This"
   const handleUseThis = useCallback(
     (url: string, onUseResult: (url: string) => void) => {
       onUseResult(url);
       setIsCompareOpen(false);
       toast.success('Result loaded into Image Studio');
     },
-    [setIsCompareOpen]
+    [setIsCompareOpen],
   );
 
-  // Derived state
-  const allCompleted = results.every(
-    (r) => r.status === 'completed' || r.status === 'idle'
-  );
-  const anyGenerating = results.some((r) => r.status === 'generating') || isGenerating;
+  const anyGenerating = results.some(
+    (result) => result.status === 'generating',
+  ) || isGenerating;
 
   return {
-    // Store-backed state
     isCompareOpen,
     setIsCompareOpen,
     compareSlots,
-    // Provider data
     providers,
     providersLoading,
     apiKeysHook,
-    // Prompt state
     sharedPrompt,
     setSharedPrompt,
     sharedNegPrompt,
     setSharedNegPrompt,
-    // Results
     results,
-    setResults,
-    // Actions
     handleGenerateAll,
     addSlot,
     removeSlot,
     handleProviderChange,
     handleModelChange,
     handleUseThis,
-    // Derived
     anyGenerating,
   };
 }

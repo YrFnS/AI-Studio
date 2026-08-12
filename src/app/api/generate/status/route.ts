@@ -1,38 +1,26 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 
+import { decodeGenerationJobToken } from '@/lib/generation-job';
 import {
   deleteGenerationJob,
   getGenerationJob,
   type GenerationJobContext,
 } from '@/lib/server-generation-store';
-import { registerProtectedMedia } from '@/lib/server-media-store';
-
-interface LegacyStatusContext {
-  provider?: string;
-  modelId?: string;
-  apiKey?: string;
-}
-
-class PermanentStatusError extends Error {}
-
-function jsonResponse(body: Record<string, unknown>, status = 200) {
-  return NextResponse.json(body, {
-    status,
-    headers: { 'Cache-Control': 'no-store' },
-  });
-}
-
-async function readProviderJson(response: Response, providerLabel: string) {
-  if (!response.ok) {
-    const message = `${providerLabel} status check failed (${response.status})`;
-    if (response.status >= 400 && response.status < 500) {
-      throw new PermanentStatusError(message);
-    }
-    throw new Error(message);
-  }
-
-  return response.json();
-}
+import { PROTECTED_MEDIA_DESCRIPTOR_VERSION } from '@/lib/protected-media';
+import {
+  MAX_STATUS_REQUEST_BYTES,
+  parseGenerationRequest,
+  statusGenerationRequestSchema,
+} from '@/lib/server/generation-request';
+import {
+  generationErrorResponse,
+  noStoreJson,
+} from '@/lib/server/generation-response';
+import {
+  providerFetch as fetch,
+  PROVIDER_STATUS_TIMEOUT_MS,
+  ProviderRequestError,
+} from '@/lib/server/provider-request';
 
 function extractReplicateUrl(output: unknown): string | null {
   if (typeof output === 'string') return output;
@@ -67,14 +55,16 @@ function extractFalUrl(data: Record<string, unknown>): string | null {
 
 async function pollProvider(job: GenerationJobContext) {
   const { provider, providerJobId, modelId, apiKey } = job;
+  const statusOptions = { timeoutMs: PROVIDER_STATUS_TIMEOUT_MS };
 
   switch (provider) {
     case 'replicate': {
       const response = await fetch(
         `https://api.replicate.com/v1/predictions/${encodeURIComponent(providerJobId)}`,
         { headers: { Authorization: `Bearer ${apiKey}` }, cache: 'no-store' },
+        statusOptions,
       );
-      const data = await readProviderJson(response, 'Replicate');
+      const data = await response.json();
 
       if (data.status === 'succeeded') {
         const resultUrl = extractReplicateUrl(data.output);
@@ -98,8 +88,8 @@ async function pollProvider(job: GenerationJobContext) {
       const statusResponse = await fetch(`${base}/status`, {
         headers: { Authorization: `Key ${apiKey}` },
         cache: 'no-store',
-      });
-      const statusData = await readProviderJson(statusResponse, 'Fal.ai');
+      }, statusOptions);
+      const statusData = await statusResponse.json();
 
       if (statusData.status === 'COMPLETED') {
         if (statusData.error) {
@@ -109,11 +99,8 @@ async function pollProvider(job: GenerationJobContext) {
         const resultResponse = await fetch(`${base}/response`, {
           headers: { Authorization: `Key ${apiKey}` },
           cache: 'no-store',
-        });
-        const resultData = (await readProviderJson(
-          resultResponse,
-          'Fal.ai result',
-        )) as Record<string, unknown>;
+        }, statusOptions);
+        const resultData = await resultResponse.json() as Record<string, unknown>;
         const resultUrl = extractFalUrl(resultData);
         if (!resultUrl) {
           return { status: 'failed', error: 'Fal.ai completed without a media URL' };
@@ -130,8 +117,9 @@ async function pollProvider(job: GenerationJobContext) {
       const response = await fetch(
         `https://api.bfl.ml/v1/get_result?id=${encodeURIComponent(providerJobId)}`,
         { headers: { 'X-Key': apiKey }, cache: 'no-store' },
+        statusOptions,
       );
-      const data = await readProviderJson(response, 'Black Forest Labs');
+      const data = await response.json();
       if (data.status === 'Ready') {
         const resultUrl = data.result?.sample;
         return resultUrl
@@ -148,8 +136,9 @@ async function pollProvider(job: GenerationJobContext) {
       const response = await fetch(
         `https://cloud.leonardo.ai/api/rest/v1/generations/${encodeURIComponent(providerJobId)}`,
         { headers: { Authorization: `Bearer ${apiKey}` }, cache: 'no-store' },
+        statusOptions,
       );
-      const data = await readProviderJson(response, 'Leonardo');
+      const data = await response.json();
       const generation = data.generations_by_pk;
       if (generation?.status === 'COMPLETE') {
         const resultUrl = generation.generated_images?.[0]?.url;
@@ -176,8 +165,9 @@ async function pollProvider(job: GenerationJobContext) {
           },
           cache: 'no-store',
         },
+        statusOptions,
       );
-      const data = await readProviderJson(response, 'Runway');
+      const data = await response.json();
       if (data.status === 'SUCCEEDED') {
         const resultUrl = extractReplicateUrl(data.output);
         return resultUrl
@@ -194,8 +184,9 @@ async function pollProvider(job: GenerationJobContext) {
       const response = await fetch(
         `https://api.lumalabs.ai/dream-machine/v1/generations/${encodeURIComponent(providerJobId)}`,
         { headers: { Authorization: `Bearer ${apiKey}` }, cache: 'no-store' },
+        statusOptions,
       );
-      const data = await readProviderJson(response, 'Luma');
+      const data = await response.json();
       if (data.state === 'completed') {
         const resultUrl = data.assets?.video;
         return resultUrl
@@ -216,8 +207,9 @@ async function pollProvider(job: GenerationJobContext) {
           headers: { 'x-goog-api-key': apiKey },
           cache: 'no-store',
         },
+        statusOptions,
       );
-      const data = await readProviderJson(response, 'Google Veo');
+      const data = await response.json();
       if (data.done) {
         if (data.error) {
           return {
@@ -235,12 +227,15 @@ async function pollProvider(job: GenerationJobContext) {
           return { status: 'failed', error: 'Google Veo completed without a media URL' };
         }
 
-        const mediaToken = registerProtectedMedia({
-          url: providerMediaUrl,
-          headers: { 'x-goog-api-key': apiKey },
-        });
-        const resultUrl = `/api/generate/media/${mediaToken}`;
-        return { status: 'completed', resultUrl, urls: [resultUrl] };
+        return {
+          status: 'completed',
+          protectedMedia: {
+            version: PROTECTED_MEDIA_DESCRIPTOR_VERSION,
+            providerId: provider,
+            providerJobId,
+            kind: 'video',
+          },
+        };
       }
       return { status: 'processing' };
     }
@@ -251,31 +246,46 @@ async function pollProvider(job: GenerationJobContext) {
 }
 
 export async function POST(req: NextRequest) {
-  let localToken: string | null = null;
+  let storedToken: string | null = null;
 
   try {
-    const body = (await req.json()) as { id?: string } & LegacyStatusContext;
-    if (!body.id) return jsonResponse({ error: 'id is required' }, 400);
-
-    localToken = body.id;
-    const storedJob = getGenerationJob(body.id);
-    const job: GenerationJobContext | null = storedJob ?? (
-      body.provider && body.apiKey
-        ? {
-            provider: body.provider,
-            providerJobId: body.id,
-            modelId: body.modelId,
-            apiKey: body.apiKey,
-            createdAt: Date.now(),
-          }
-        : null
+    const body = await parseGenerationRequest(
+      req,
+      statusGenerationRequestSchema,
+      MAX_STATUS_REQUEST_BYTES,
     );
 
+    const storedJob = getGenerationJob(body.id);
+    if (storedJob) storedToken = body.id;
+
+    const decodedJob = decodeGenerationJobToken(body.id);
+    const statelessJob: GenerationJobContext | null = decodedJob && body.apiKey
+      ? {
+          provider: decodedJob.providerId,
+          providerJobId: decodedJob.jobId,
+          modelId: decodedJob.modelId,
+          apiKey: body.apiKey,
+          createdAt: Date.now(),
+        }
+      : null;
+
+    const legacyJob: GenerationJobContext | null = body.provider && body.apiKey
+      ? {
+          provider: body.provider,
+          providerJobId: body.id,
+          modelId: body.modelId,
+          apiKey: body.apiKey,
+          createdAt: Date.now(),
+        }
+      : null;
+
+    const job = storedJob ?? statelessJob ?? legacyJob;
+
     if (!job) {
-      return jsonResponse(
-        { status: 'failed', error: 'Generation job context is unavailable. Start the generation again.' },
-        404,
-      );
+      const error = decodedJob && !body.apiKey
+        ? 'The provider API key is required to poll this generation. Reconnect the provider and try again.'
+        : 'Generation job context is unavailable. Start the generation again.';
+      return noStoreJson({ status: 'failed', error }, 404);
     }
 
     const result = await pollProvider(job);
@@ -283,20 +293,25 @@ export async function POST(req: NextRequest) {
       deleteGenerationJob(body.id);
     }
 
-    return jsonResponse(result);
+    return noStoreJson(result);
   } catch (error) {
-    if (localToken && error instanceof PermanentStatusError) {
-      deleteGenerationJob(localToken);
-      return jsonResponse({ status: 'failed', error: error.message });
+    if (
+      storedToken
+      && error instanceof ProviderRequestError
+      && !error.retryable
+    ) {
+      deleteGenerationJob(storedToken);
     }
 
-    console.error('Status check error:', error);
-    return jsonResponse({ error: 'Failed to check generation status' }, 502);
+    return generationErrorResponse(error, {
+      logLabel: 'Status check error',
+      fallbackMessage: 'Failed to check generation status',
+    });
   }
 }
 
 export async function GET() {
-  return jsonResponse(
+  return noStoreJson(
     { error: 'Status checks must use POST so credentials are never placed in the URL.' },
     405,
   );

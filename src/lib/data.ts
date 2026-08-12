@@ -89,6 +89,7 @@ async function ensureDemoGallery() {
 export async function fetchGenerations(options?: {
   filter?: 'all' | 'image' | 'video' | 'favorite';
   collectionId?: string;
+  search?: string;
   page?: number;
   limit?: number;
 }) {
@@ -99,6 +100,7 @@ export async function fetchGenerations(options?: {
   const { generations, total } = await idb.getGenerations({
     filter: options?.filter,
     collectionId: options?.collectionId,
+    search: options?.search,
     limit,
     offset,
     orderBy: 'desc',
@@ -119,6 +121,13 @@ export async function fetchGenerationsTimeline(options?: {
 
 export async function saveGeneration(gen: GenerationRecord) {
   return idb.saveGeneration(gen);
+}
+
+export async function saveGenerationMediaAsset(
+  generationId: string,
+  blob: Blob,
+) {
+  return idb.saveGenerationMediaAsset(generationId, blob);
 }
 
 export async function updateGeneration(id: string, updates: Partial<GenerationRecord>) {

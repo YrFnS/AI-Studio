@@ -24,7 +24,8 @@ export interface ImageEditorProps {
   imageUrl: string;
   onClose: () => void;
   providerId: string;
-  onResult: (url: string) => void;
+  parentGenerationId?: string;
+  onResult: (url: string, generationId?: string) => void;
 }
 
 // ---------------------------------------------------------------------------

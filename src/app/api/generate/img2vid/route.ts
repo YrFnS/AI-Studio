@@ -1,87 +1,146 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
+
+import { encodeGenerationJobToken } from '@/lib/generation-job';
 import { PROVIDERS } from '@/lib/providers-data';
-import { registerGenerationJob } from '@/lib/server-generation-store';
+import { requireModelOperation } from '@/lib/generation-registry';
+import {
+  imageToVideoGenerationRequestSchema,
+  MAX_SINGLE_IMAGE_REQUEST_BYTES,
+  parseGenerationRequest,
+} from '@/lib/server/generation-request';
+import {
+  generationErrorResponse,
+  noStoreJson,
+} from '@/lib/server/generation-response';
+import { providerFetch as fetch } from '@/lib/server/provider-request';
 
 export const runtime = 'nodejs';
 
-async function getProviderById(id: string) {
+function getProviderById(id: string) {
   return PROVIDERS.find((provider) => provider.id === id);
 }
 
-function json(payload: Record<string, unknown>, status = 200) {
-  return NextResponse.json(payload, {
-    status,
-    headers: { 'Cache-Control': 'no-store' },
-  });
+function runwayRatio(aspectRatio?: string): string {
+  const ratios: Record<string, string> = {
+    '16:9': '1280:720',
+    '9:16': '720:1280',
+    '1:1': '960:960',
+    '4:3': '1104:832',
+    '3:4': '832:1104',
+  };
+  return ratios[aspectRatio || '16:9'] || '1280:720';
+}
+
+function resolveFalImageToVideoEndpoint(modelId: string): string {
+  if (modelId === 'bytedance/seedance-2.0/text-to-video') {
+    return 'bytedance/seedance-2.0/image-to-video';
+  }
+  if (modelId === 'bytedance/seedance-2.0/fast/text-to-video') {
+    return 'bytedance/seedance-2.0/fast/image-to-video';
+  }
+  return modelId;
 }
 
 async function img2vidRunway(
-  params: { prompt: string; model: string; duration: number; imageUrl: string },
+  params: {
+    prompt: string;
+    model: string;
+    duration: number;
+    imageUrl: string;
+    aspectRatio?: string;
+  },
   apiKey: string,
 ) {
   const body: Record<string, unknown> = {
     model: params.model,
     promptText: params.prompt,
     promptImage: params.imageUrl,
+    duration: Math.min(10, Math.max(3, params.duration)),
+    ratio: runwayRatio(params.aspectRatio),
   };
-  if (params.duration) body.duration = params.duration;
 
   const response = await fetch('https://api.dev.runwayml.com/v1/image_to_video', {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
-      'X-Runway-API-Version': '2024-11-06',
+      'X-Runway-Version': '2024-11-06',
     },
     body: JSON.stringify(body),
   });
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Runway img2vid API error: ${response.status} - ${error}`);
-  }
 
   const data = await response.json();
+  if (!data.id) throw new Error('Runway did not return a task id');
   return { jobId: data.id, status: 'processing' as const };
 }
 
 async function img2vidLuma(
-  params: { prompt: string; imageUrl: string; aspectRatio?: string },
+  params: {
+    prompt: string;
+    imageUrl: string;
+    aspectRatio?: string;
+    model: string;
+    duration: number;
+  },
   apiKey: string,
 ) {
-  const body: Record<string, unknown> = {
-    prompt: params.prompt,
-    image_url: params.imageUrl,
-    aspect_ratio: params.aspectRatio || '16:9',
-  };
-
-  const response = await fetch('https://api.lumalabs.ai/dream-machine/v1/generations', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Luma img2vid API error: ${response.status} - ${error}`);
+  if (params.imageUrl.startsWith('data:')) {
+    throw new Error('Luma image-to-video requires a public HTTPS image URL.');
   }
 
+  const maxDuration = params.model === 'ray-flash-2' ? 15 : 10;
+  const body: Record<string, unknown> = {
+    generation_type: 'video',
+    prompt: params.prompt,
+    aspect_ratio: params.aspectRatio || '16:9',
+    model: params.model,
+    resolution: '720p',
+    duration: `${Math.min(maxDuration, Math.max(5, params.duration))}s`,
+    keyframes: {
+      frame0: { type: 'image', url: params.imageUrl },
+    },
+  };
+
+  const response = await fetch(
+    'https://api.lumalabs.ai/dream-machine/v1/generations/video',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    },
+  );
+
   const data = await response.json();
+  if (!data.id) throw new Error('Luma did not return a generation id');
   return { jobId: data.id, status: 'processing' as const };
 }
 
 async function img2vidFal(
-  params: { prompt: string; model: string; imageUrl: string; duration: number },
+  params: {
+    prompt: string;
+    endpoint: string;
+    imageUrl: string;
+    duration: number;
+    aspectRatio?: string;
+  },
   apiKey: string,
 ) {
   const body: Record<string, unknown> = {
     prompt: params.prompt,
     image_url: params.imageUrl,
+    duration: String(params.duration),
+    aspect_ratio: params.aspectRatio || '16:9',
   };
-  if (params.duration) body.duration = params.duration;
 
-  const response = await fetch(`https://queue.fal.run/${params.model}/requests`, {
+  if (params.endpoint.includes('seedance-2.0')) {
+    body.resolution = '720p';
+    body.generate_audio = true;
+  }
+
+  const response = await fetch(`https://queue.fal.run/${params.endpoint}`, {
     method: 'POST',
     headers: {
       Authorization: `Key ${apiKey}`,
@@ -89,87 +148,94 @@ async function img2vidFal(
     },
     body: JSON.stringify(body),
   });
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Fal.ai img2vid API error: ${response.status} - ${error}`);
-  }
 
   const data = await response.json();
+  if (!data.request_id) throw new Error('Fal.ai did not return a request id');
   return { jobId: data.request_id, status: 'processing' as const };
 }
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
     const {
       providerId,
       modelId,
       imageUrl,
       prompt,
+      reviewedRegistration,
       apiKey,
       duration,
       aspectRatio,
-    } = body as {
-      providerId?: string;
-      modelId?: string;
-      imageUrl?: string;
-      prompt?: string;
-      apiKey?: string;
-      duration?: number;
-      aspectRatio?: string;
-    };
+    } = await parseGenerationRequest(
+      req,
+      imageToVideoGenerationRequestSchema,
+      MAX_SINGLE_IMAGE_REQUEST_BYTES,
+    );
 
-    if (!providerId || !imageUrl || !prompt) {
-      return json({ error: 'providerId, imageUrl, and prompt are required' }, 400);
+    const provider = getProviderById(providerId);
+    if (!provider) {
+      return noStoreJson({
+        error: 'Provider not found',
+        code: 'provider_not_found',
+      }, 404);
     }
-    if (!apiKey) return json({ error: 'API key is required' }, 400);
 
-    const provider = await getProviderById(providerId);
-    if (!provider) return json({ error: 'Provider not found' }, 404);
+    requireModelOperation(
+      provider.name,
+      modelId,
+      'image-to-video',
+      'img2vid',
+      reviewedRegistration,
+    );
 
-    const videoDuration = Math.max(3, Math.min(10, duration || 5));
-    let effectiveModelId = modelId || '';
+    let pollingModelId = modelId;
     let result: { jobId: string; status: 'processing' };
 
     switch (provider.name) {
       case 'runway':
-        effectiveModelId ||= 'gen4-turbo';
         result = await img2vidRunway({
           prompt,
-          model: effectiveModelId,
-          duration: videoDuration,
+          model: modelId,
+          duration,
           imageUrl,
+          aspectRatio,
         }, apiKey);
         break;
       case 'luma':
-        effectiveModelId ||= 'ray-2';
         result = await img2vidLuma({
           prompt,
           imageUrl,
-          aspectRatio: aspectRatio || '16:9',
+          aspectRatio,
+          model: modelId,
+          duration,
         }, apiKey);
         break;
-      case 'fal':
-        effectiveModelId ||= 'fal-ai/kling-video/v1/standard';
+      case 'fal': {
+        const endpoint = resolveFalImageToVideoEndpoint(modelId);
+        pollingModelId = endpoint;
         result = await img2vidFal({
           prompt,
-          model: effectiveModelId,
+          endpoint,
           imageUrl,
-          duration: videoDuration,
+          duration,
+          aspectRatio,
         }, apiKey);
         break;
+      }
       default:
-        throw new Error(`Image-to-video is not supported for provider: ${provider.displayName}`);
+        return noStoreJson({
+          error: `No registered image-to-video adapter is available for ${provider.displayName}.`,
+          code: 'adapter_not_configured',
+        }, 400);
     }
 
-    const localJobId = registerGenerationJob({
-      provider: provider.name,
-      providerJobId: result.jobId,
-      modelId: effectiveModelId,
-      apiKey,
+    const localJobId = encodeGenerationJobToken({
+      providerId: provider.name,
+      jobId: result.jobId,
+      modelId: pollingModelId,
+      kind: 'video',
     });
 
-    return json({
+    return noStoreJson({
       id: localJobId,
       jobId: localJobId,
       localJob: true,
@@ -177,9 +243,9 @@ export async function POST(req: NextRequest) {
       message: 'Image-to-video generation in progress. Poll /api/generate/status for results.',
     });
   } catch (error) {
-    console.error('img2vid error:', error);
-    return json({
-      error: error instanceof Error ? error.message : 'Failed to generate video from image',
-    }, 500);
+    return generationErrorResponse(error, {
+      logLabel: 'Image-to-video error',
+      fallbackMessage: 'Failed to generate video from image',
+    });
   }
 }

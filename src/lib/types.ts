@@ -1,3 +1,8 @@
+import type {
+  GenerationOperationId,
+  ModelOperationContract,
+} from '@/lib/generation-registry';
+
 // ---------------------------------------------------------------------------
 // Shared Types — consolidated from across the AI Studio app
 // ---------------------------------------------------------------------------
@@ -38,6 +43,8 @@ export interface ProviderModel {
   modelId: string;
   type: ModelType;
   capabilities: string;
+  operations?: readonly GenerationOperationId[];
+  operationContracts?: readonly ModelOperationContract[];
   description?: string;
   defaultParams?: string;
   priceInfo?: string;
@@ -61,6 +68,7 @@ export interface Provider {
   website?: string;
   sortOrder: number;
   isActive: boolean;
+  operations?: readonly GenerationOperationId[];
   models: ProviderModel[];
 }
 

@@ -3,14 +3,17 @@
 // Uses Dexie-like raw IndexedDB API — no external dependencies
 // ---------------------------------------------------------------------------
 
+import { matchesGenerationSearch } from '@/lib/gallery-search';
+import type { ModelRegistrationRecord } from '@/lib/model-registration';
+
 const DB_NAME = 'ai-studio';
-const DB_VERSION = 5;
+const DB_VERSION = 7;
 
 // ---------------------------------------------------------------------------
 // Open / upgrade DB
 // ---------------------------------------------------------------------------
 
-function openDB(): Promise<IDBDatabase> {
+export function openAIStudioDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     if (typeof window === 'undefined') {
       reject(new Error('IndexedDB not available in SSR'));
@@ -67,12 +70,27 @@ function openDB(): Promise<IDBDatabase> {
         const discStore = db.createObjectStore('discoveredModels', { keyPath: 'id' });
         discStore.createIndex('providerName', 'providerName', { unique: false });
       }
+      // v6: generated protected media blobs
+      if (!db.objectStoreNames.contains('mediaAssets')) {
+        const mediaStore = db.createObjectStore('mediaAssets', { keyPath: 'id' });
+        mediaStore.createIndex('generationId', 'generationId', { unique: true });
+        mediaStore.createIndex('createdAt', 'createdAt', { unique: false });
+      }
+      // v7: locally reviewed custom/discovered model contracts
+      if (!db.objectStoreNames.contains('modelRegistrations')) {
+        const registrationStore = db.createObjectStore('modelRegistrations', { keyPath: 'id' });
+        registrationStore.createIndex('sourceId', 'sourceId', { unique: false });
+        registrationStore.createIndex('providerName', 'providerName', { unique: false });
+        registrationStore.createIndex('modelId', 'modelId', { unique: false });
+        registrationStore.createIndex('status', 'status', { unique: false });
+        registrationStore.createIndex('updatedAt', 'updatedAt', { unique: false });
+      }
     };
   });
 }
 
 function tx(storeNames: string | string[], mode: IDBTransactionMode = 'readonly'): Promise<{ transaction: IDBTransaction; stores: Record<string, IDBObjectStore> }> {
-  return openDB().then((db) => {
+  return openAIStudioDatabase().then((db) => {
     const names = Array.isArray(storeNames) ? storeNames : [storeNames];
     const transaction = db.transaction(names, mode);
     const stores: Record<string, IDBObjectStore> = {};
@@ -231,6 +249,72 @@ export async function clearAllReferenceImages(): Promise<void> {
 // Generations (replaces Prisma Generation model)
 // ===========================================================================
 
+export interface GenerationMediaAsset {
+  id: string;
+  generationId: string;
+  blob: Blob;
+  mimeType: string;
+  size: number;
+  createdAt: number;
+}
+
+const mediaObjectUrls = new Map<string, string>();
+
+function revokeGenerationMediaUrl(assetId: string): void {
+  const url = mediaObjectUrls.get(assetId);
+  if (url && typeof URL !== 'undefined') URL.revokeObjectURL(url);
+  mediaObjectUrls.delete(assetId);
+}
+
+export async function saveGenerationMediaAsset(
+  generationId: string,
+  blob: Blob,
+): Promise<GenerationMediaAsset> {
+  const asset: GenerationMediaAsset = {
+    id: `media:${generationId}`,
+    generationId,
+    blob,
+    mimeType: blob.type || 'application/octet-stream',
+    size: blob.size,
+    createdAt: Date.now(),
+  };
+  revokeGenerationMediaUrl(asset.id);
+  const { transaction, stores } = await tx('mediaAssets', 'readwrite');
+  stores.mediaAssets.put(asset);
+  await txComplete(transaction);
+  return asset;
+}
+
+export async function getGenerationMediaAsset(
+  assetId: string,
+): Promise<GenerationMediaAsset | undefined> {
+  const { stores } = await tx('mediaAssets');
+  return reqToPromise(stores.mediaAssets.get(assetId));
+}
+
+async function materializeGenerationMedia(
+  record: GenerationRecord,
+): Promise<GenerationRecord> {
+  if (!record.mediaAssetId) return record;
+  const cached = mediaObjectUrls.get(record.mediaAssetId);
+  if (cached) return { ...record, resultUrl: cached };
+
+  const asset = await getGenerationMediaAsset(record.mediaAssetId);
+  if (!asset) return record;
+  if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') {
+    return record;
+  }
+
+  const resultUrl = URL.createObjectURL(asset.blob);
+  mediaObjectUrls.set(asset.id, resultUrl);
+  return {
+    ...record,
+    resultUrl,
+    resultMimeType: asset.mimeType,
+    resultSize: asset.size,
+  };
+}
+
 export interface GenerationRecord {
   id: string;
   providerId: string;
@@ -243,6 +327,9 @@ export interface GenerationRecord {
   inputImageUrl?: string;
   resultUrl?: string;
   resultData?: string;
+  mediaAssetId?: string;
+  resultMimeType?: string;
+  resultSize?: number;
   thumbnailUrl?: string;
   status: 'pending' | 'processing' | 'completed' | 'failed';
   error?: string;
@@ -263,7 +350,10 @@ export async function saveGeneration(gen: GenerationRecord): Promise<void> {
 
 export async function getGeneration(id: string): Promise<GenerationRecord | undefined> {
   const { stores } = await tx('generations');
-  return reqToPromise(stores['generations'].get(id));
+  const record = await reqToPromise<GenerationRecord | undefined>(
+    stores.generations.get(id),
+  );
+  return record ? materializeGenerationMedia(record) : undefined;
 }
 
 export async function updateGeneration(id: string, updates: Partial<GenerationRecord>): Promise<void> {
@@ -277,8 +367,14 @@ export async function updateGeneration(id: string, updates: Partial<GenerationRe
 }
 
 export async function deleteGeneration(id: string): Promise<void> {
-  const { transaction, stores } = await tx(['generations', 'collectionItems'], 'readwrite');
-  stores['generations'].delete(id);
+  const assetId = `media:${id}`;
+  revokeGenerationMediaUrl(assetId);
+  const { transaction, stores } = await tx(
+    ['generations', 'collectionItems', 'mediaAssets'],
+    'readwrite',
+  );
+  stores.generations.delete(id);
+  stores.mediaAssets.delete(assetId);
   // Also remove from collections
   const itemIndex = stores['collectionItems'].index('generationId');
   const items = await reqToPromise<{ id: string }[]>(itemIndex.getAll(id));
@@ -289,15 +385,21 @@ export async function deleteGeneration(id: string): Promise<void> {
 }
 
 export async function clearAllGenerations(): Promise<void> {
-  const { transaction, stores } = await tx(['generations', 'collectionItems'], 'readwrite');
-  stores['generations'].clear();
-  stores['collectionItems'].clear();
+  for (const assetId of mediaObjectUrls.keys()) revokeGenerationMediaUrl(assetId);
+  const { transaction, stores } = await tx(
+    ['generations', 'collectionItems', 'mediaAssets'],
+    'readwrite',
+  );
+  stores.generations.clear();
+  stores.collectionItems.clear();
+  stores.mediaAssets.clear();
   await txComplete(transaction);
 }
 
 export async function getGenerations(options?: {
   filter?: 'all' | 'image' | 'video' | 'favorite';
   collectionId?: string;
+  search?: string;
   limit?: number;
   offset?: number;
   orderBy?: 'asc' | 'desc';
@@ -319,6 +421,12 @@ export async function getGenerations(options?: {
     filtered = filtered.filter((g) => genIds.has(g.id));
   }
 
+  if (options?.search?.trim()) {
+    filtered = filtered.filter((generation) =>
+      matchesGenerationSearch(generation, options.search || ''),
+    );
+  }
+
   const total = filtered.length;
 
   // Sort by createdAt
@@ -329,8 +437,11 @@ export async function getGenerations(options?: {
   const offset = options?.offset || 0;
   const limit = options?.limit || filtered.length;
   filtered = filtered.slice(offset, offset + limit);
+  const generations = await Promise.all(
+    filtered.map(materializeGenerationMedia),
+  );
 
-  return { generations: filtered, total };
+  return { generations, total };
 }
 
 export async function getGenerationsForTimeline(options?: {
@@ -361,7 +472,7 @@ export async function getGenerationsForTimeline(options?: {
 
   if (options?.providerFilter) filtered = filtered.filter((g) => g.providerId === options.providerFilter);
 
-  return filtered;
+  return Promise.all(filtered.map(materializeGenerationMedia));
 }
 
 export async function getStats(): Promise<{
@@ -585,14 +696,83 @@ export async function getAllCustomModels(): Promise<CustomModelRecord[]> {
 }
 
 export async function deleteCustomModel(id: string): Promise<void> {
-  const { transaction, stores } = await tx('customModels', 'readwrite');
-  stores['customModels'].delete(id);
+  const { transaction, stores } = await tx(
+    ['customModels', 'modelRegistrations'],
+    'readwrite',
+  );
+  stores.customModels.delete(id);
+  const registrations = await reqToPromise<ModelRegistrationRecord[]>(
+    stores.modelRegistrations.index('sourceId').getAll(id),
+  );
+  for (const registration of registrations) {
+    stores.modelRegistrations.delete(registration.id);
+  }
   await txComplete(transaction);
 }
 
 export async function clearAllCustomModels(): Promise<void> {
-  const { transaction, stores } = await tx('customModels', 'readwrite');
-  stores['customModels'].clear();
+  const { transaction, stores } = await tx(
+    ['customModels', 'modelRegistrations'],
+    'readwrite',
+  );
+  stores.customModels.clear();
+  const registrations = await reqToPromise<ModelRegistrationRecord[]>(
+    stores.modelRegistrations.getAll(),
+  );
+  for (const registration of registrations) {
+    if (registration.source === 'custom') {
+      stores.modelRegistrations.delete(registration.id);
+    }
+  }
+  await txComplete(transaction);
+}
+
+// ===========================================================================
+// Reviewed Model Registrations
+// ===========================================================================
+
+export type { ModelRegistrationRecord };
+
+export async function saveModelRegistration(
+  registration: ModelRegistrationRecord,
+): Promise<void> {
+  const { transaction, stores } = await tx('modelRegistrations', 'readwrite');
+  stores.modelRegistrations.put(registration);
+  await txComplete(transaction);
+}
+
+export async function getModelRegistration(
+  id: string,
+): Promise<ModelRegistrationRecord | undefined> {
+  const { stores } = await tx('modelRegistrations');
+  return reqToPromise(stores.modelRegistrations.get(id));
+}
+
+export async function getAllModelRegistrations(): Promise<ModelRegistrationRecord[]> {
+  const { stores } = await tx('modelRegistrations');
+  const registrations = await reqToPromise<ModelRegistrationRecord[]>(
+    stores.modelRegistrations.getAll(),
+  );
+  return registrations.sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+export async function getApprovedModelRegistrations(): Promise<ModelRegistrationRecord[]> {
+  const { stores } = await tx('modelRegistrations');
+  const approved = await reqToPromise<ModelRegistrationRecord[]>(
+    stores.modelRegistrations.index('status').getAll('approved'),
+  );
+  return approved.sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+export async function deleteModelRegistration(id: string): Promise<void> {
+  const { transaction, stores } = await tx('modelRegistrations', 'readwrite');
+  stores.modelRegistrations.delete(id);
+  await txComplete(transaction);
+}
+
+export async function clearAllModelRegistrations(): Promise<void> {
+  const { transaction, stores } = await tx('modelRegistrations', 'readwrite');
+  stores.modelRegistrations.clear();
   await txComplete(transaction);
 }
 

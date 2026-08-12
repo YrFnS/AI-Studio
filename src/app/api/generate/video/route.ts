@@ -1,8 +1,19 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 
+import { encodeGenerationJobToken } from '@/lib/generation-job';
 import { PROVIDERS } from '@/lib/providers-data';
-import { supportsGeneration } from '@/lib/provider-capabilities';
-import { registerGenerationJob } from '@/lib/server-generation-store';
+import { requireModelOperation } from '@/lib/generation-registry';
+import {
+  MAX_VIDEO_GENERATION_REQUEST_BYTES,
+  parseGenerationRequest,
+  videoGenerationRequestSchema,
+} from '@/lib/server/generation-request';
+import {
+  generationErrorResponse,
+  noStoreJson,
+} from '@/lib/server/generation-response';
+import { providerFetch as fetch } from '@/lib/server/provider-request';
+import { submitReplicatePrediction } from '@/lib/server/replicate';
 
 type AsyncVideoResult = {
   jobId: string;
@@ -20,11 +31,6 @@ type VideoRequestParams = {
 
 function getProviderById(id: string) {
   return PROVIDERS.find((provider) => provider.id === id);
-}
-
-function normalizeDuration(value: unknown, fallback = 5): number {
-  const parsed = typeof value === 'number' ? value : Number.parseInt(String(value), 10);
-  return Number.isFinite(parsed) ? parsed : fallback;
 }
 
 function runwayRatio(aspectRatio: string, hasImage: boolean): string {
@@ -69,10 +75,6 @@ async function generateRunwayVideo(
     },
     body: JSON.stringify(body),
   });
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Runway API error: ${response.status} - ${error}`);
-  }
 
   const data = await response.json();
   if (!data.id) throw new Error('Runway did not return a task id');
@@ -118,10 +120,6 @@ async function generateLumaVideo(
       body: JSON.stringify(body),
     },
   );
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Luma AI API error: ${response.status} - ${error}`);
-  }
 
   const data = await response.json();
   if (!data.id) throw new Error('Luma did not return a generation id');
@@ -167,10 +165,6 @@ async function generateFalVideo(
     },
     body: JSON.stringify(body),
   });
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Fal.ai video API error: ${response.status} - ${error}`);
-  }
 
   const data = await response.json();
   if (!data.request_id) throw new Error('Fal.ai did not return a request id');
@@ -192,21 +186,15 @@ async function generateReplicateVideo(
   if (params.imageUrl) input.image = params.imageUrl;
   if (params.endImageUrl && params.imageUrl) input.last_frame_image = params.endImageUrl;
 
-  const response = await fetch(`${providerBaseUrl}/v1/predictions`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ version: params.model, input }),
-  });
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Replicate video API error: ${response.status} - ${error}`);
+  const data = await submitReplicatePrediction(
+    providerBaseUrl,
+    params.model,
+    input,
+    apiKey,
+  );
+  if (typeof data.id !== 'string') {
+    throw new Error('Replicate did not return a prediction id');
   }
-
-  const data = await response.json();
-  if (!data.id) throw new Error('Replicate did not return a prediction id');
   return { jobId: data.id, modelId: params.model };
 }
 
@@ -252,10 +240,6 @@ async function generateGoogleVeoVideo(
       body: JSON.stringify(body),
     },
   );
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(`Google Veo API error: ${response.status} - ${error}`);
-  }
 
   const data = await response.json();
   if (!data.name) throw new Error('Google Veo did not return an operation name');
@@ -264,7 +248,6 @@ async function generateGoogleVeoVideo(
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
     const {
       providerId,
       modelId,
@@ -274,49 +257,37 @@ export async function POST(req: NextRequest) {
       imageUrl,
       startFrameUrl,
       endFrameUrl,
+      reviewedRegistration,
       apiKey,
-    } = body as {
-      providerId?: string;
-      modelId?: string;
-      prompt?: string;
-      duration?: number | string;
-      aspectRatio?: string;
-      imageUrl?: string;
-      startFrameUrl?: string;
-      endFrameUrl?: string;
-      apiKey?: string;
-    };
-
-    if (!providerId || !modelId || !prompt) {
-      return NextResponse.json(
-        { error: 'providerId, modelId, and prompt are required' },
-        { status: 400 },
-      );
-    }
-    if (!apiKey) {
-      return NextResponse.json(
-        { error: 'API key is required. Please configure your API key in Settings.' },
-        { status: 400 },
-      );
-    }
+    } = await parseGenerationRequest(
+      req,
+      videoGenerationRequestSchema,
+      MAX_VIDEO_GENERATION_REQUEST_BYTES,
+    );
 
     const provider = getProviderById(providerId);
     if (!provider) {
-      return NextResponse.json({ error: 'Provider not found' }, { status: 404 });
+      return noStoreJson({
+        error: 'Provider not found',
+        code: 'provider_not_found',
+      }, 404);
     }
-    if (!supportsGeneration(provider.name, 'video')) {
-      return NextResponse.json(
-        { error: `Video generation is not supported for ${provider.displayName}` },
-        { status: 400 },
-      );
-    }
+
+    const sourceImage = startFrameUrl || imageUrl;
+    requireModelOperation(
+      provider.name,
+      modelId,
+      sourceImage ? 'image-to-video' : 'text-to-video',
+      'video',
+      reviewedRegistration,
+    );
 
     const params: VideoRequestParams = {
       prompt,
       model: modelId,
-      duration: normalizeDuration(duration),
-      aspectRatio: aspectRatio || '16:9',
-      imageUrl: startFrameUrl || imageUrl,
+      duration,
+      aspectRatio,
+      imageUrl: sourceImage,
       endImageUrl: endFrameUrl,
     };
 
@@ -338,20 +309,20 @@ export async function POST(req: NextRequest) {
         result = await generateGoogleVeoVideo(params, apiKey, provider.baseUrl);
         break;
       default:
-        return NextResponse.json(
-          { error: `No video adapter is configured for ${provider.displayName}` },
-          { status: 400 },
-        );
+        return noStoreJson({
+          error: `No video adapter is configured for ${provider.displayName}`,
+          code: 'adapter_not_configured',
+        }, 400);
     }
 
-    const localJobId = registerGenerationJob({
-      provider: provider.name,
-      providerJobId: result.jobId,
+    const localJobId = encodeGenerationJobToken({
+      providerId: provider.name,
+      jobId: result.jobId,
       modelId: result.modelId || modelId,
-      apiKey,
+      kind: 'video',
     });
 
-    return NextResponse.json({
+    return noStoreJson({
       id: localJobId,
       jobId: localJobId,
       localJob: true,
@@ -359,10 +330,9 @@ export async function POST(req: NextRequest) {
       message: 'Video generation in progress. Poll /api/generate/status for results.',
     });
   } catch (error) {
-    console.error('Generate video error:', error);
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to generate video' },
-      { status: 500 },
-    );
+    return generationErrorResponse(error, {
+      logLabel: 'Generate video error',
+      fallbackMessage: 'Failed to generate video',
+    });
   }
 }

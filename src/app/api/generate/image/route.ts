@@ -1,9 +1,18 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 
 import type { GenerateParams } from '@/lib/types';
+import { encodeGenerationJobToken } from '@/lib/generation-job';
 import { PROVIDERS } from '@/lib/providers-data';
-import { supportsGeneration } from '@/lib/provider-capabilities';
-import { registerGenerationJob } from '@/lib/server-generation-store';
+import { requireModelOperation } from '@/lib/generation-registry';
+import {
+  imageGenerationRequestSchema,
+  MAX_IMAGE_GENERATION_REQUEST_BYTES,
+  parseGenerationRequest,
+} from '@/lib/server/generation-request';
+import {
+  generationErrorResponse,
+  noStoreJson,
+} from '@/lib/server/generation-response';
 import {
   generateOpenAI,
   generateStability,
@@ -15,7 +24,6 @@ import {
   generateHuggingFace,
   generateAIMLAPI,
   generateGoogle,
-  generateLeonardo,
   generateRecraft,
   generateBFL,
 } from '../handlers';
@@ -26,7 +34,6 @@ function getProviderById(id: string) {
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json();
     const {
       providerId,
       modelId,
@@ -63,36 +70,29 @@ export async function POST(req: NextRequest) {
       hiresScale,
       hiresSteps,
       hiresDenoise,
+      reviewedRegistration,
       apiKey,
-    } = body as GenerateParams & {
-      providerId: string;
-      modelId: string;
-      apiKey?: string;
-    };
-
-    if (!providerId || !modelId || !prompt) {
-      return NextResponse.json(
-        { error: 'providerId, modelId, and prompt are required' },
-        { status: 400 },
-      );
-    }
-    if (!apiKey) {
-      return NextResponse.json(
-        { error: 'API key is required. Please configure your API key in Settings.' },
-        { status: 400 },
-      );
-    }
+    } = await parseGenerationRequest(
+      req,
+      imageGenerationRequestSchema,
+      MAX_IMAGE_GENERATION_REQUEST_BYTES,
+    );
 
     const provider = getProviderById(providerId);
     if (!provider) {
-      return NextResponse.json({ error: 'Provider not found' }, { status: 404 });
+      return noStoreJson({
+        error: 'Provider not found',
+        code: 'provider_not_found',
+      }, 404);
     }
-    if (!supportsGeneration(provider.name, 'image')) {
-      return NextResponse.json(
-        { error: `Image generation is not supported for ${provider.displayName}` },
-        { status: 400 },
-      );
-    }
+
+    requireModelOperation(
+      provider.name,
+      modelId,
+      inputImageUrl ? 'image-to-image' : 'text-to-image',
+      'image',
+      reviewedRegistration,
+    );
 
     const params: GenerateParams = {
       prompt,
@@ -168,28 +168,25 @@ export async function POST(req: NextRequest) {
       case 'google-aistudio':
         result = await generateGoogle(params, apiKey, provider.baseUrl);
         break;
-      case 'leonardo':
-        result = await generateLeonardo(params, apiKey, provider.baseUrl);
-        break;
       case 'recraft':
         result = await generateRecraft(params, apiKey, provider.baseUrl);
         break;
       default:
-        return NextResponse.json(
-          { error: `No image adapter is configured for ${provider.displayName}` },
-          { status: 400 },
-        );
+        return noStoreJson({
+          error: `No image adapter is configured for ${provider.displayName}`,
+          code: 'adapter_not_configured',
+        }, 400);
     }
 
     if (!Array.isArray(result) && 'jobId' in result) {
-      const localJobId = registerGenerationJob({
-        provider: provider.name,
-        providerJobId: result.jobId,
+      const localJobId = encodeGenerationJobToken({
+        providerId: provider.name,
+        jobId: result.jobId,
         modelId,
-        apiKey,
+        kind: 'image',
       });
 
-      return NextResponse.json({
+      return noStoreJson({
         id: localJobId,
         jobId: localJobId,
         localJob: true,
@@ -198,12 +195,11 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    return NextResponse.json({ status: 'completed', urls: result });
+    return noStoreJson({ status: 'completed', urls: result });
   } catch (error) {
-    console.error('Generate image error:', error);
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'Failed to generate image' },
-      { status: 500 },
-    );
+    return generationErrorResponse(error, {
+      logLabel: 'Generate image error',
+      fallbackMessage: 'Failed to generate image',
+    });
   }
 }

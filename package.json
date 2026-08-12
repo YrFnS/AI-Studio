@@ -6,6 +6,7 @@
     "dev": "next dev -p 3000 2>&1 | tee dev.log",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
+    "evidence:check": "bun test src/lib/p0-evidence.test.ts src/lib/p0-evidence-ownership.test.ts",
     "lint": "eslint .",
     "check": "bun run typecheck && bun run test && bun run lint",
     "build:app": "next build && node -e \"const fs=require('fs');fs.mkdirSync('.next/standalone/.next',{recursive:true});fs.cpSync('.next/static','.next/standalone/.next/static',{recursive:true});fs.cpSync('public','.next/standalone/public',{recursive:true})\"",

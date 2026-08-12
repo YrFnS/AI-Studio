@@ -1,8 +1,15 @@
 'use client';
 
+import { generationFetch as fetch } from '@/lib/generation-client';
+import {
+  GenerationLifecycleError,
+  startGenerationJob,
+  type GenerationJobHandle,
+} from '@/lib/generation-lifecycle';
+
 import { useEffect, useState, useCallback, useRef } from 'react';
 import * as idb from '@/lib/data';
-import { beginGeneration, completeGeneration, failGeneration, markGenerationProcessing, type GenerationDescriptor } from '@/lib/generation-persistence';
+import { createGenerationId, type GenerationDescriptor } from '@/lib/generation-persistence';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast } from 'sonner';
 import {
@@ -36,8 +43,11 @@ import {
 } from 'lucide-react';
 
 import { useAppStore } from '@/lib/store';
-import type { GenerationQueueItem } from '@/lib/store';
-import { saveReferenceImage, getAllCustomModels } from '@/lib/idb';
+import { saveReferenceImage } from '@/lib/idb';
+import {
+  MAX_REFERENCE_IMAGE_LABEL,
+  validateReferenceImageFile,
+} from '@/lib/reference-image-limits';
 import { useApiKeys } from '@/hooks/use-api-keys';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
@@ -215,8 +225,9 @@ function ImageUploadSlot({
 
   // Handle file upload → convert to base64
   const handleFile = (file: File) => {
-    if (!file.type.startsWith('image/')) {
-      toast.error('Please upload an image file');
+    const error = validateReferenceImageFile(file);
+    if (error) {
+      toast.error(error);
       return;
     }
     const reader = new FileReader();
@@ -351,7 +362,7 @@ function ImageUploadSlot({
             <p className="text-xs text-muted-foreground">
               {isDragOver ? 'Drop image here' : 'Click or drag to upload'}
             </p>
-            <p className="text-[10px] text-muted-foreground/40 mt-0.5">PNG, JPG, WebP</p>
+            <p className="text-[10px] text-muted-foreground/40 mt-0.5">PNG, JPG, WebP • Max {MAX_REFERENCE_IMAGE_LABEL}</p>
           </div>
           <button
             type="button"
@@ -590,7 +601,12 @@ function VideoSidebarContent({
               </SelectItem>
             ) : (
               providers
-                .filter((p) => p.models.some((m) => m.type === 'video'))
+                .filter((provider) => provider.models.some((model) => (
+                  model.type === 'video'
+                  && (model.capabilities || '').split(',').includes(
+                    referenceImageUrl || videoStartFrameUrl ? 'i2v' : 't2v',
+                  )
+                )))
                 .map((p) => (
                   <SelectItem key={p.id} value={p.id}>
                     <span className="flex items-center gap-2">
@@ -1084,9 +1100,9 @@ export function VideoStudio() {
   const [providersLoading, setProvidersLoading] = useState(true);
   const [referenceImageUrl, setReferenceImageUrl] = useState<string | null>(null);
 
-  const [currentJobId, setCurrentJobId] = useState<string | null>(null);
   const [latestGenerationId, setLatestGenerationId] = useState<string | null>(null);
-  const generationRef = useRef<GenerationDescriptor | null>(null);
+  const videoGenerationHandleRef = useRef<GenerationJobHandle | null>(null);
+  const videoGenerationOwnerRef = useRef<AbortController | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [videoProgress, setVideoProgress] = useState(0);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -1094,13 +1110,16 @@ export function VideoStudio() {
   const [refImagePickerOpen, setRefImagePickerOpen] = useState(false);
   const [refImageTarget, setRefImageTarget] = useState<'reference' | 'startFrame' | 'endFrame'>('reference');
   const videoRef = useRef<HTMLVideoElement>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const queueIdRef = useRef<string | null>(null);
   const isMobile = useIsMobile();
 
   // Derived ----------------------------------------------------------------
   const selectedProviderData = providers.find((p) => p.id === selectedVideoProvider) ?? null;
-  const videoModels = selectedProviderData?.models.filter((m) => m.type === 'video') ?? [];
+  const requiresImageToVideo = Boolean(referenceImageUrl || videoStartFrameUrl);
+  const videoOperationCapability = requiresImageToVideo ? 'i2v' : 't2v';
+  const videoModels = selectedProviderData?.models.filter((model) => (
+    model.type === 'video'
+    && (model.capabilities || '').split(',').includes(videoOperationCapability)
+  )) ?? [];
   const hasApiKey = apiKeysHook.hasKey(selectedVideoProvider);
 
   // Reset presets -----------------------------------------------------------
@@ -1141,43 +1160,27 @@ export function VideoStudio() {
         if (!res.ok) throw new Error('Failed to fetch');
         const data: Provider[] = await res.json();
 
-        // Merge custom models from IndexedDB
-        try {
-          const customModels = await getAllCustomModels();
-          for (const cm of customModels) {
-            const provider = data.find((p) => p.name === cm.providerId || p.id === cm.providerId);
-            if (provider) {
-              provider.models.push({
-                id: `custom-${cm.id}`,
-                name: cm.name,
-                modelId: cm.modelId,
-                type: cm.type,
-                capabilities: cm.capabilities,
-                description: cm.description || '',
-                priceInfo: cm.priceInfo || '',
-                isDefault: false,
-              });
-            }
-          }
-        } catch { /* non-critical */ }
-
         setProviders(data);
 
-        // Auto-select first provider that has video models and an API key
+        // Auto-select a provider/model registered for text-to-video.
         if (!selectedVideoProvider && data.length > 0) {
-          const withKeyAndVideo = data.find(
-            (p) => apiKeysHook.hasKey(p.id) && p.models.some((m) => m.type === 'video')
+          const supportsTextToVideo = (model: ProviderModel) => (
+            model.type === 'video'
+            && (model.capabilities || '').split(',').includes('t2v')
           );
-          const withVideo = data.find((p) => p.models.some((m) => m.type === 'video'));
-          const pick = withKeyAndVideo || withVideo || data[0];
-          setSelectedVideoProvider(pick.id);
-          // Auto-select default video model
-          const defaultModel = pick.models.find((m) => m.isDefault && m.type === 'video');
-          if (defaultModel) {
-            setSelectedVideoModel(defaultModel.modelId);
-          } else {
-            const firstVideo = pick.models.find((m) => m.type === 'video');
-            if (firstVideo) setSelectedVideoModel(firstVideo.modelId);
+          const withKeyAndVideo = data.find((provider) => (
+            apiKeysHook.hasKey(provider.id)
+            && provider.models.some(supportsTextToVideo)
+          ));
+          const withVideo = data.find((provider) => (
+            provider.models.some(supportsTextToVideo)
+          ));
+          const pick = withKeyAndVideo || withVideo;
+          if (pick) {
+            setSelectedVideoProvider(pick.id);
+            const eligibleModels = pick.models.filter(supportsTextToVideo);
+            const defaultModel = eligibleModels.find((model) => model.isDefault);
+            setSelectedVideoModel((defaultModel || eligibleModels[0])?.modelId || '');
           }
         }
       } catch {
@@ -1190,77 +1193,32 @@ export function VideoStudio() {
   }, [providerVersion]);
   useEffect(() => {
     if (!selectedVideoProvider || providers.length === 0) return;
-    const prov = providers.find((p) => p.id === selectedVideoProvider);
-    if (!prov) return;
-    const defaultModel = prov.models.find((m) => m.isDefault && m.type === 'video');
-    if (defaultModel) {
-      setSelectedVideoModel(defaultModel.modelId);
-    } else {
-      const firstVideo = prov.models.find((m) => m.type === 'video');
-      if (firstVideo) setSelectedVideoModel(firstVideo.modelId);
-      else setSelectedVideoModel('');
-    }
-  }, [selectedVideoProvider, providers, setSelectedVideoModel]);
+    const provider = providers.find((candidate) => candidate.id === selectedVideoProvider);
+    if (!provider) return;
+    const eligibleModels = provider.models.filter((model) => (
+      model.type === 'video'
+      && (model.capabilities || '').split(',').includes(videoOperationCapability)
+    ));
+    const currentIsEligible = eligibleModels.some(
+      (model) => model.modelId === selectedVideoModel,
+    );
+    if (currentIsEligible) return;
+    const defaultModel = eligibleModels.find((model) => model.isDefault);
+    setSelectedVideoModel((defaultModel || eligibleModels[0])?.modelId || '');
+  }, [
+    selectedVideoProvider,
+    selectedVideoModel,
+    providers,
+    videoOperationCapability,
+    setSelectedVideoModel,
+  ]);
 
 
 
-  // Polling logic — API keys stay in the POST body, never in the URL.
-  const startPolling = useCallback(
-    (providerJobId: string) => {
-      if (pollRef.current) clearInterval(pollRef.current);
-
-      pollRef.current = setInterval(async () => {
-        try {
-          const apiKey = await apiKeysHook.getKeyForProvider(selectedVideoProvider);
-          if (!apiKey) throw new Error('API key is no longer available');
-          const res = await fetch('/api/generate/status', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ id: providerJobId, apiKey, provider: selectedVideoProvider, modelId: selectedVideoModel }),
-          });
-          const statusData = await res.json();
-          if (!res.ok) throw new Error(statusData.error || 'Status check failed');
-
-          if (statusData.status === 'completed') {
-            const urls = statusData.urls || (statusData.resultUrl ? [statusData.resultUrl] : []);
-            const descriptor = generationRef.current;
-            if (descriptor) {
-              const ids = await completeGeneration(descriptor, urls, providerJobId);
-              setLatestGenerationId(ids[0] || null);
-            }
-            setIsVideoGenerating(false);
-            setLatestResult(urls[0] || null);
-            setCurrentJobId(null);
-            if (queueIdRef.current) updateQueueItem(queueIdRef.current, { status: 'completed', resultUrl: urls[0] || undefined });
-            queueIdRef.current = null;
-            generationRef.current = null;
-            if (pollRef.current) clearInterval(pollRef.current);
-            pollRef.current = null;
-            toast.success('Video generated successfully!');
-          } else if (statusData.status === 'failed') {
-            const descriptor = generationRef.current;
-            if (descriptor) await failGeneration(descriptor, statusData.error || 'Video generation failed', providerJobId);
-            setIsVideoGenerating(false);
-            setCurrentJobId(null);
-            if (queueIdRef.current) updateQueueItem(queueIdRef.current, { status: 'failed' });
-            queueIdRef.current = null;
-            generationRef.current = null;
-            if (pollRef.current) clearInterval(pollRef.current);
-            pollRef.current = null;
-            toast.error(statusData.error || 'Video generation failed');
-          }
-        } catch (error) {
-          console.error('Video status polling failed', error);
-        }
-      }, 5000);
-    },
-    [setIsVideoGenerating, setLatestResult, apiKeysHook, selectedVideoProvider, selectedVideoModel, updateQueueItem]
-  );
-
-  // Cleanup polling on unmount
+  // Page changes detach local ownership without falsely failing provider work.
   useEffect(() => {
     return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
+      videoGenerationOwnerRef.current?.abort('Video Studio unmounted');
     };
   }, []);
 
@@ -1324,9 +1282,39 @@ export function VideoStudio() {
       return;
     }
 
+    const sourceImage = referenceImageUrl || state.videoStartFrameUrl;
+    const requiredCapability = sourceImage ? 'i2v' : 't2v';
+    const selectedGenerationModel = providers
+      .find((provider) => provider.id === state.selectedVideoProvider)
+      ?.models.find((model) => model.modelId === state.selectedVideoModel);
+    if (
+      !selectedGenerationModel
+      || !(selectedGenerationModel.capabilities || '')
+        .split(',')
+        .includes(requiredCapability)
+    ) {
+      toast.error(
+        sourceImage
+          ? 'The selected model is not registered for image-to-video generation.'
+          : 'The selected model is not registered for text-to-video generation.',
+      );
+      return;
+    }
+
+    const activeHandle = videoGenerationHandleRef.current;
+    if (
+      activeHandle
+      && ['submitting', 'processing'].includes(activeHandle.getSnapshot().state)
+    ) {
+      toast.info('A video generation is already in progress');
+      return;
+    }
+
+    const owner = new AbortController();
+    videoGenerationOwnerRef.current = owner;
+
     setIsVideoGenerating(true);
     setLatestResult(null);
-    setCurrentJobId(null);
     setIsPlaying(false);
     setVideoProgress(0);
     setShowGenInfo(true);
@@ -1341,23 +1329,15 @@ export function VideoStudio() {
     if (moodPreset) enhancedPrompt += moodPreset.suffix;
 
     const provData = providers.find((p) => p.id === state.selectedVideoProvider);
-    const vModels = provData?.models.filter((m) => m.type === 'video') ?? [];
+    const vModels = provData?.models.filter((model) => (
+      model.type === 'video'
+      && (model.capabilities || '').split(',').includes(requiredCapability)
+    )) ?? [];
 
-    // Add to generation queue
-    const queueItem: GenerationQueueItem = {
-      id: `vid-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      prompt: enhancedPrompt,
-      providerName: provData?.displayName || state.selectedVideoProvider,
-      providerColor: provData?.color || '#888',
-      modelName: vModels.find((m) => m.modelId === state.selectedVideoModel)?.name || state.selectedVideoModel,
-      status: 'processing',
-      createdAt: Date.now(),
-    };
-    addToQueue(queueItem);
-    queueIdRef.current = queueItem.id;
-
+    const generationStartTime = Date.now();
+    const generationId = createGenerationId('vid');
     const generation: GenerationDescriptor = {
-      id: queueItem.id,
+      id: generationId,
       providerId: state.selectedVideoProvider,
       providerName: provData?.displayName || state.selectedVideoProvider,
       modelId: state.selectedVideoModel,
@@ -1365,84 +1345,95 @@ export function VideoStudio() {
       prompt: enhancedPrompt,
       inputImageUrl: referenceImageUrl || state.videoStartFrameUrl || undefined,
       duration: state.videoDuration,
-      params: { aspectRatio: state.videoAspectRatio, style: state.videoStyle, cameraMotion: state.videoCameraMotion, mood: state.videoMood },
-      createdAt: queueItem.createdAt,
-    };
-    generationRef.current = generation;
-    setLatestGenerationId(null);
-    await beginGeneration(generation);
-
-    try {
-      // Get API key from IndexedDB (BYOK model)
-      const apiKey = await apiKeysHook.getKeyForProvider(state.selectedVideoProvider);
-      if (!apiKey) {
-        const message = 'No API key configured for this provider. Add one in Settings.';
-        await failGeneration(generation, message);
-        updateQueueItem(queueItem.id, { status: 'failed' });
-        queueIdRef.current = null;
-        generationRef.current = null;
-        toast.error(message);
-        setIsVideoGenerating(false);
-        return;
-      }
-
-      const body: Record<string, unknown> = {
-        providerId: state.selectedVideoProvider,
-        modelId: state.selectedVideoModel,
-        prompt: enhancedPrompt,
-        duration: state.videoDuration,
+      params: {
         aspectRatio: state.videoAspectRatio,
-        imageUrl: referenceImageUrl || undefined,
+        style: state.videoStyle,
+        cameraMotion: state.videoCameraMotion,
+        mood: state.videoMood,
         startFrameUrl: state.videoStartFrameUrl || undefined,
         endFrameUrl: state.videoEndFrameUrl || undefined,
-        apiKey,
-      };
+      },
+      createdAt: generationStartTime,
+    };
+    setLatestGenerationId(null);
 
-      const res = await fetch('/api/generate/video', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
+    const body: Record<string, unknown> = {
+      providerId: state.selectedVideoProvider,
+      modelId: state.selectedVideoModel,
+      prompt: enhancedPrompt,
+      duration: state.videoDuration,
+      aspectRatio: state.videoAspectRatio,
+      imageUrl: referenceImageUrl || undefined,
+      startFrameUrl: state.videoStartFrameUrl || undefined,
+      endFrameUrl: state.videoEndFrameUrl || undefined,
+    };
 
-      const data = await res.json();
+    const handle = startGenerationJob({
+      descriptor: generation,
+      endpoint: '/api/generate/video',
+      body,
+      queue: {
+        port: {
+          add: addToQueue,
+          update: updateQueueItem,
+        },
+        metadata: {
+          prompt: enhancedPrompt,
+          providerName: provData?.displayName || state.selectedVideoProvider,
+          providerColor: provData?.color || '#888',
+          modelName:
+            vModels.find((model) => model.modelId === state.selectedVideoModel)?.name
+            || state.selectedVideoModel,
+        },
+      },
+      signal: owner.signal,
+      pollPolicy: {
+        maxElapsedMs: 45 * 60 * 1000,
+        maxConsecutiveErrors: 6,
+      },
+    });
+    videoGenerationHandleRef.current = handle;
 
-      if (!res.ok) {
-        throw new Error(data.error || 'Video generation failed');
+    let processingNotified = false;
+    const unsubscribe = handle.subscribe((snapshot) => {
+      if (
+        !owner.signal.aborted
+        && snapshot.state === 'processing'
+        && !processingNotified
+      ) {
+        processingNotified = true;
+        toast.info('Video generation in progress… This may take a few minutes.');
       }
+    });
 
-      if (data.status === 'completed' && data.urls) {
-        // Immediate result (unlikely for video, but handle it)
-        setLatestResult(data.urls[0] || null);
-        setIsVideoGenerating(false);
-        const ids = await completeGeneration(generation, data.urls);
-        setLatestGenerationId(ids[0] || null);
-        if (queueIdRef.current) updateQueueItem(queueIdRef.current, { status: 'completed', resultUrl: data.urls[0] || undefined });
-        queueIdRef.current = null;
-        generationRef.current = null;
-        toast.success('Video generated successfully!');
-      } else if (data.status === 'processing' && data.id) {
-        // Async – start polling
-        setCurrentJobId(data.id);
-        await markGenerationProcessing(generation, data.id);
-        startPolling(data.id);
-        toast.info('Video generation in progress… This may take a minute.');
-      } else {
-        const message = 'Unexpected response from server';
-        await failGeneration(generation, message);
-        setIsVideoGenerating(false);
-        if (queueIdRef.current) updateQueueItem(queueIdRef.current, { status: 'failed' });
-        queueIdRef.current = null;
-        generationRef.current = null;
-        toast.error(message);
+    try {
+      const result = await handle.result;
+      if (owner.signal.aborted) return;
+
+      setLatestResult(result.urls[0] || null);
+      setLatestGenerationId(result.generationIds[0] || null);
+      setIsPlaying(false);
+      setVideoProgress(0);
+      setShowGenInfo(true);
+      toast.success('Video generated successfully!');
+    } catch (error) {
+      if (owner.signal.aborted) return;
+      if (
+        error instanceof GenerationLifecycleError
+        && (error.code === 'detached' || error.code === 'cancelled')
+      ) {
+        return;
       }
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'Video generation failed';
-      await failGeneration(generation, message);
-      setIsVideoGenerating(false);
-      if (queueIdRef.current) updateQueueItem(queueIdRef.current, { status: 'failed' });
-      queueIdRef.current = null;
-      generationRef.current = null;
-      toast.error(message);
+      toast.error(error instanceof Error ? error.message : 'Video generation failed');
+    } finally {
+      unsubscribe();
+      if (videoGenerationHandleRef.current === handle) {
+        videoGenerationHandleRef.current = null;
+      }
+      if (videoGenerationOwnerRef.current === owner) {
+        videoGenerationOwnerRef.current = null;
+      }
+      if (!owner.signal.aborted) setIsVideoGenerating(false);
     }
   }, [
     providers,
@@ -1450,10 +1441,23 @@ export function VideoStudio() {
     apiKeysHook,
     setIsVideoGenerating,
     setLatestResult,
-    startPolling,
     addToQueue,
     updateQueueItem,
   ]);
+
+  const handleCancelVideoGeneration = useCallback(async () => {
+    const handle = videoGenerationHandleRef.current;
+    const owner = videoGenerationOwnerRef.current;
+
+    if (handle) {
+      await handle.cancel('Video generation cancelled by user');
+    } else {
+      owner?.abort('Video generation cancelled by user');
+    }
+
+    setIsVideoGenerating(false);
+    toast.info('Video generation cancelled');
+  }, [setIsVideoGenerating]);
 
   // Keyboard shortcut: generate on trigger
   useEffect(() => {
@@ -1681,8 +1685,18 @@ export function VideoStudio() {
                   />
                 </div>
                 <p className="text-[10px] text-muted-foreground/60">
-                  Polling for results every 5 seconds…
+                  The job remains recoverable if you navigate away or restart the local app.
                 </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={handleCancelVideoGeneration}
+                  className="border-border/60 bg-surface/80 text-muted-foreground hover:border-destructive/40 hover:bg-destructive/10 hover:text-destructive"
+                >
+                  <X className="mr-1.5 h-3.5 w-3.5" />
+                  Cancel generation
+                </Button>
               </motion.div>
             )}
 

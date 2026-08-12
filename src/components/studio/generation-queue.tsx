@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 
 import { useAppStore, type GenerationQueueItem } from '@/lib/store';
+import { isActiveGenerationStatus } from '@/lib/generation-queue-state';
 
 // ---------------------------------------------------------------------------
 // Relative time helper
@@ -35,6 +36,7 @@ function relativeTime(timestamp: number): string {
 
 function StatusIcon({ status }: { status: GenerationQueueItem['status'] }) {
   switch (status) {
+    case 'pending':
     case 'processing':
       return (
         <div className="relative flex h-5 w-5 items-center justify-center">
@@ -78,7 +80,7 @@ function QueueItemRow({ item, onDismiss }: { item: GenerationQueueItem; onDismis
 
   // Auto-dismiss completed items after 5s (but keep in list with fade)
   useEffect(() => {
-    if (item.status !== 'processing') {
+    if (!isActiveGenerationStatus(item.status)) {
       const fadeTimer = setTimeout(() => setOpacity(0.4), 4500);
       return () => {
         clearTimeout(fadeTimer);
@@ -99,7 +101,7 @@ function QueueItemRow({ item, onDismiss }: { item: GenerationQueueItem; onDismis
       onHoverStart={() => setIsHovered(true)}
       onHoverEnd={() => setIsHovered(false)}
       className={`queue-item-enter queue-item-expand flex items-start gap-2.5 rounded-lg border border-border/30 bg-surface/60 p-2.5 backdrop-blur-sm ${
-        item.status === 'processing' ? 'queue-item-processing' : ''
+        isActiveGenerationStatus(item.status) ? 'queue-item-processing' : ''
       } ${item.status === 'completed' ? 'queue-item-complete' : ''} ${
         item.status === 'failed' ? 'queue-item-failed border-red-500/30' : ''
       }`}
@@ -124,8 +126,20 @@ function QueueItemRow({ item, onDismiss }: { item: GenerationQueueItem; onDismis
             {relativeTime(item.createdAt)}
           </span>
         </div>
+        {item.detail && (
+          <p className={`mt-1.5 text-[10px] leading-relaxed ${
+            item.remoteCancellation === 'requested'
+            || item.remoteCancellation === 'already-terminal'
+              ? 'text-emerald-300/80'
+              : item.status === 'failed'
+                ? 'text-red-300/75'
+                : 'text-muted-foreground/70'
+          }`}>
+            {item.detail}
+          </p>
+        )}
         {/* Progress bar for processing items */}
-        {item.status === 'processing' && (
+        {isActiveGenerationStatus(item.status) && (
           <div className="mt-1.5 h-0.5 w-full overflow-hidden rounded-full bg-white/5">
             <div className="h-full w-1/3 rounded-full bg-gradient-to-r from-[#d9ff00]/60 to-[#d9ff00] animate-queue-progress" />
           </div>
@@ -164,8 +178,10 @@ export function GenerationQueue() {
   const { generationQueue, removeFromQueue, clearCompleted } = useAppStore();
   const [isExpanded, setIsExpanded] = useState(false);
 
-  const activeCount = generationQueue.filter((i) => i.status === 'processing').length;
-  const completedCount = generationQueue.filter((i) => i.status !== 'processing').length;
+  const activeCount = generationQueue.filter((item) =>
+    isActiveGenerationStatus(item.status),
+  ).length;
+  const completedCount = generationQueue.length - activeCount;
   const totalCount = generationQueue.length;
 
   const handleDismiss = useCallback(

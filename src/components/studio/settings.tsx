@@ -37,12 +37,24 @@ import {
   Sparkles,
   Pencil,
   Telescope,
+  ClipboardCheck,
 } from 'lucide-react';
 
 import { useAppStore } from '@/lib/store';
 import { maskKey as idbMaskKey, getAllApiKeys, saveApiKey, deleteApiKey, clearAllApiKeys, saveCustomModel, getAllCustomModels, deleteCustomModel, type CustomModelRecord, clearDiscoveredModelsCache } from '@/lib/idb';
 import { loadAllModels, getStaticProviders, providerSupportsDiscovery } from '@/lib/model-service';
 import { useApiKeys } from '@/hooks/use-api-keys';
+import { ModelRegistrationReview } from '@/components/studio/model-registration-review';
+import { P0EvidenceLab } from '@/components/studio/p0-evidence-lab';
+import {
+  createAIStudioBackup,
+  downloadAIStudioBackup,
+  formatByteSize,
+  readAIStudioBackupFile,
+  restoreAIStudioBackup,
+  type BackupRestoreMode,
+  type BackupRestoreSummary,
+} from '@/lib/local-backup';
 import type { ApiKeyRecord, ProviderModel, Provider, ModelWithProvider } from '@/lib/types';
 import { CAPABILITY_OPTIONS } from '@/lib/types';
 import { Button } from '@/components/ui/button';
@@ -375,7 +387,7 @@ function ApiKeysSection() {
             API Keys
           </h3>
           <p className="text-sm text-muted-foreground mt-1">
-            Keys are stored in your browser (IndexedDB) and never sent to our server. This is the BYOK security model.
+            Keys are stored in IndexedDB. When you test, generate, poll, retrieve protected media, or cancel a supported job, the matching key is sent in a POST body through this AI Studio instance to the selected provider. Keys are not written to a server-side database.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -868,7 +880,6 @@ function CustomModelsSection() {
 
   useEffect(() => {
     fetchData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Model stats ---------------------------------------------------------------
@@ -1148,7 +1159,7 @@ function CustomModelsSection() {
         description: formDescription.trim() || undefined,
       });
 
-      toast.success(`Model "${formName}" added successfully`);
+      toast.success(`Model candidate "${formName}" saved for review`);
       resetForm();
       setDialogOpen(false);
       fetchData({ force: true });
@@ -1216,14 +1227,14 @@ function CustomModelsSection() {
             <DialogTrigger asChild>
               <Button className="gap-2 bg-[#d9ff00] text-background hover:bg-[#c5eb00]">
                 <Plus className="h-4 w-4" />
-                Add Custom Model
+                Add Model Candidate
               </Button>
             </DialogTrigger>
             <DialogContent className="glass-strong sm:max-w-lg max-h-[90vh] overflow-y-auto">
             <DialogHeader>
-              <DialogTitle className="text-foreground">Add Custom Model</DialogTitle>
+              <DialogTitle className="text-foreground">Add Model Candidate</DialogTitle>
               <DialogDescription className="text-muted-foreground">
-                Add a new model to a provider. Make sure the model ID matches the API identifier.
+                Save a non-executable model candidate. It must pass the Registration Review workflow before it can appear in generation selectors.
               </DialogDescription>
             </DialogHeader>
 
@@ -1421,7 +1432,7 @@ function CustomModelsSection() {
 
                   {/* Explanation */}
                   <p className="text-[10px] text-muted-foreground/50 leading-relaxed">
-                    Type and capabilities are auto-detected from the provider and model ID.
+                    Type and capabilities are candidate metadata only; executable operations are granted by reviewed adapter profiles.
                     {formCapabilities.length > 1 && ' This model supports multiple capabilities.'}
                   </p>
                 </div>
@@ -1571,7 +1582,7 @@ function CustomModelsSection() {
                 ) : (
                   <Plus className="h-4 w-4" />
                 )}
-                Add Model
+                Save Candidate
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -1859,33 +1870,24 @@ function ExportImportSection() {
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [resetDialogOpen, setResetDialogOpen] = useState(false);
   const [resetting, setResetting] = useState(false);
-  const [importResult, setImportResult] = useState<{ modelsImported: number; modelsSkipped: number; note: string } | null>(null);
+  const [importResult, setImportResult] = useState<BackupRestoreSummary | null>(null);
+  const [restoreMode, setRestoreMode] = useState<BackupRestoreMode>('replace');
   const [exportKeysDialogOpen, setExportKeysDialogOpen] = useState(false);
   const [exportingKeys, setExportingKeys] = useState(false);
   const [importKeysDialogOpen, setImportKeysDialogOpen] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Export full settings (no keys) ------------------------------------------
+  // Export all local data except API keys -----------------------------------
   const handleExport = useCallback(async () => {
     setExporting(true);
     try {
-      const res = await fetch('/api/settings/export');
-      if (!res.ok) throw new Error('Failed to export');
-      const data = await res.json();
-
-      const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `ai-studio-settings-${new Date().toISOString().split('T')[0]}.json`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-
-      toast.success('Settings exported successfully');
-    } catch {
-      toast.error('Failed to export settings');
+      const backup = await createAIStudioBackup();
+      downloadAIStudioBackup(backup);
+      toast.success(
+        `Backed up ${backup.summary.totalRecords} records and ${formatByteSize(backup.summary.mediaBytes)} of local media`,
+      );
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Failed to export local backup');
     } finally {
       setExporting(false);
     }
@@ -1928,46 +1930,34 @@ function ExportImportSection() {
     }
   }, []);
 
-  // Import models -----------------------------------------------------------
-  const handleImportModels = useCallback(async () => {
+  // Restore local backup -----------------------------------------------------
+  const handleImportBackup = useCallback(async () => {
     const input = document.createElement('input');
     input.type = 'file';
     input.accept = '.json';
-    input.onchange = async (e) => {
-      const file = (e.target as HTMLInputElement).files?.[0];
+    input.onchange = async (event) => {
+      const file = (event.target as HTMLInputElement).files?.[0];
       if (!file) return;
 
       setImporting(true);
       setImportResult(null);
       try {
-        const text = await file.text();
-        const data = JSON.parse(text);
-
-        const res = await fetch('/api/settings/import', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(data),
-        });
-
-        const result = await res.json();
-        if (!res.ok) {
-          throw new Error(result.error || 'Import failed');
-        }
-
-        setImportResult({
-          modelsImported: result.modelsImported,
-          modelsSkipped: result.modelsSkipped,
-          note: result.note || '',
-        });
-        toast.success(`Imported ${result.modelsImported} custom model(s)`);
-      } catch (err) {
-        toast.error(err instanceof Error ? err.message : 'Failed to import settings');
+        const backup = await readAIStudioBackupFile(file);
+        const result = await restoreAIStudioBackup(backup, { mode: restoreMode });
+        setImportResult(result);
+        refreshProviders();
+        toast.success(
+          `Restored ${result.recordsImported} records, including ${result.mediaAssetsImported} local media asset(s)`,
+        );
+        window.setTimeout(() => window.location.reload(), 900);
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : 'Failed to restore local backup');
       } finally {
         setImporting(false);
       }
     };
     input.click();
-  }, []);
+  }, [refreshProviders, restoreMode]);
 
   // Import API keys -----------------------------------------------------------
   const handleImportKeys = useCallback(async () => {
@@ -2034,7 +2024,7 @@ function ExportImportSection() {
           Export / Import
         </h3>
         <p className="text-sm text-muted-foreground mt-1">
-          Transfer your configuration between devices or back up your settings.
+          Back up or restore generations, prompts, collections, references, custom model definitions, and downloaded media.
         </p>
       </motion.div>
 
@@ -2049,9 +2039,7 @@ function ExportImportSection() {
         <div className="space-y-1">
           <p className="text-sm font-medium text-foreground">Security Notice</p>
           <p className="text-xs text-muted-foreground">
-            API keys are stored in your browser (IndexedDB) and never leave your device by default.
-            When exporting keys, they will be written in <strong className="text-foreground">plain text</strong> to the JSON file.
-            Store exported files securely and delete them after importing.
+            API keys remain in IndexedDB until an operation needs one. At that point, the selected key is sent through this AI Studio instance in a POST body to the provider; it is not stored in a server-side database. Local backups exclude keys. Separate key exports contain plain text and must be protected.
           </p>
         </div>
       </motion.div>
@@ -2071,9 +2059,9 @@ function ExportImportSection() {
                   <Download className="h-4 w-4 text-[#d9ff00]" />
                 </div>
                 <div>
-                  <CardTitle className="text-base font-semibold text-foreground">Export Configuration</CardTitle>
+                  <CardTitle className="text-base font-semibold text-foreground">Export Local Backup</CardTitle>
                   <p className="text-xs text-muted-foreground mt-0.5">
-                    Provider setup & custom models
+                    Complete local data, including downloaded media
                   </p>
                 </div>
               </div>
@@ -2082,7 +2070,7 @@ function ExportImportSection() {
               <div className="space-y-3">
                 <div className="rounded-lg bg-surface/80 border border-border/30 p-3">
                   <p className="text-xs text-muted-foreground">
-                    Exports provider metadata, custom models, and capabilities. <strong className="text-foreground">API keys are not included.</strong>
+                    Exports generations, prompts, collections, reference images, custom model definitions, and IndexedDB media assets. <strong className="text-foreground">API keys are not included.</strong> Backups with videos can be large.
                   </p>
                 </div>
                 <Button
@@ -2095,7 +2083,7 @@ function ExportImportSection() {
                   ) : (
                     <FileJson className="h-4 w-4" />
                   )}
-                  {exporting ? 'Exporting...' : 'Export Configuration'}
+                  {exporting ? 'Building Backup...' : 'Export Local Backup'}
                 </Button>
               </div>
             </CardContent>
@@ -2169,9 +2157,9 @@ function ExportImportSection() {
                   <Upload className="h-4 w-4 text-cyan-400" />
                 </div>
                 <div>
-                  <CardTitle className="text-base font-semibold text-foreground">Import Configuration</CardTitle>
+                  <CardTitle className="text-base font-semibold text-foreground">Restore Local Backup</CardTitle>
                   <p className="text-xs text-muted-foreground mt-0.5">
-                    Custom models from previous export
+                    Restore metadata and downloaded media
                   </p>
                 </div>
               </div>
@@ -2180,7 +2168,7 @@ function ExportImportSection() {
               <div className="space-y-3">
                 <div className="rounded-lg bg-surface/80 border border-border/30 p-3">
                   <p className="text-xs text-muted-foreground">
-                    Import will add custom models. Existing models will not be overwritten.
+                    Restore a versioned AI Studio backup. Replace mode clears non-key local data first; merge mode keeps unrelated records. API keys are never changed.
                   </p>
                 </div>
                 <Button
@@ -2194,7 +2182,7 @@ function ExportImportSection() {
                   ) : (
                     <Upload className="h-4 w-4" />
                   )}
-                  {importing ? 'Importing...' : 'Import Models'}
+                  {importing ? 'Restoring...' : 'Restore Backup'}
                 </Button>
 
                 {importResult && (
@@ -2208,7 +2196,7 @@ function ExportImportSection() {
                       <span className="text-sm font-medium text-foreground">Import Complete</span>
                     </div>
                     <p className="text-xs text-muted-foreground">
-                      {importResult.modelsImported} model(s) imported, {importResult.modelsSkipped} skipped
+                      {importResult.recordsImported} record(s) restored, including {importResult.mediaAssetsImported} media asset(s) ({formatByteSize(importResult.mediaBytesImported)})
                     </p>
                   </motion.div>
                 )}
@@ -2335,17 +2323,37 @@ function ExportImportSection() {
       <AlertDialog open={importDialogOpen} onOpenChange={setImportDialogOpen}>
         <AlertDialogContent className="glass-strong">
           <AlertDialogHeader>
-            <AlertDialogTitle className="text-foreground">Import Configuration</AlertDialogTitle>
+            <AlertDialogTitle className="text-foreground">Restore Local Backup</AlertDialogTitle>
             <AlertDialogDescription className="text-muted-foreground">
-              Select a previously exported AI Studio JSON file to import custom models. API keys will not be imported.
+              Select a versioned AI Studio local backup. API keys are excluded and will remain unchanged.
             </AlertDialogDescription>
+            <div className="mt-4 space-y-2 text-left">
+              <Label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                Restore mode
+              </Label>
+              <Select
+                value={restoreMode}
+                onValueChange={(value) => setRestoreMode(value as BackupRestoreMode)}
+              >
+                <SelectTrigger className="bg-surface border-border/60">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="bg-[#1a1a1a] border-border/60">
+                  <SelectItem value="replace">Replace local data (recommended)</SelectItem>
+                  <SelectItem value="merge">Merge with existing data</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-[11px] leading-relaxed text-muted-foreground">
+                Replace clears generations, prompts, collections, references, custom/discovered definitions, and local media before restoring. Stored API keys are never cleared.
+              </p>
+            </div>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel className="border-border/60 bg-surface hover:bg-surface-hover">Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => {
                 setImportDialogOpen(false);
-                handleImportModels();
+                handleImportBackup();
               }}
               className="bg-[#d9ff00] text-background hover:bg-[#c5eb00]"
             >
@@ -2522,7 +2530,7 @@ export function Settings() {
             <div>
               <h2 className="text-xl font-bold text-foreground">Settings</h2>
               <p className="text-sm text-muted-foreground">
-                Configure API keys, manage models, and transfer settings
+                Configure API keys, review model contracts, capture P0 evidence, and transfer local data
               </p>
             </div>
           </motion.div>
@@ -2530,7 +2538,7 @@ export function Settings() {
           {/* Tabs */}
           <Tabs
             value={settingsTab}
-            onValueChange={(v) => setSettingsTab(v as 'providers' | 'models' | 'transfer')}
+            onValueChange={(v) => setSettingsTab(v as 'providers' | 'models' | 'review' | 'evidence' | 'transfer')}
             className="w-full"
           >
             <TabsList className="bg-surface border border-border/40 p-1 rounded-xl">
@@ -2547,6 +2555,20 @@ export function Settings() {
               >
                 <Box className="h-4 w-4" />
                 Models
+              </TabsTrigger>
+              <TabsTrigger
+                value="review"
+                className="rounded-lg gap-2 data-[state=active]:bg-[#d9ff00]/10 data-[state=active]:text-[#d9ff00] data-[state=active]:shadow-none px-4 transition-all duration-200"
+              >
+                <Shield className="h-4 w-4" />
+                Review
+              </TabsTrigger>
+              <TabsTrigger
+                value="evidence"
+                className="rounded-lg gap-2 data-[state=active]:bg-[#d9ff00]/10 data-[state=active]:text-[#d9ff00] data-[state=active]:shadow-none px-4 transition-all duration-200"
+              >
+                <ClipboardCheck className="h-4 w-4" />
+                Evidence
               </TabsTrigger>
               <TabsTrigger
                 value="transfer"
@@ -2574,6 +2596,26 @@ export function Settings() {
                 transition={{ duration: 0.2 }}
               >
                 <CustomModelsSection />
+              </motion.div>
+            </TabsContent>
+
+            <TabsContent value="review" className="mt-6">
+              <motion.div
+                initial={{ opacity: 0, x: -10 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ duration: 0.2 }}
+              >
+                <ModelRegistrationReview />
+              </motion.div>
+            </TabsContent>
+
+            <TabsContent value="evidence" className="mt-6">
+              <motion.div
+                initial={{ opacity: 0, x: -10 }}
+                animate={{ opacity: 1, x: 0 }}
+                transition={{ duration: 0.2 }}
+              >
+                <P0EvidenceLab />
               </motion.div>
             </TabsContent>
 
